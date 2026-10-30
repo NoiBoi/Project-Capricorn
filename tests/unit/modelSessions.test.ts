@@ -58,7 +58,7 @@ it('returns to an established project after a simulated three-day gap and expire
     const cognition=new DialogueCognition(store,()=>true,()=>now);cognition.observe({id:'question',role:'assistant',content:'Which design should we inspect?',ts:now});
     now+=3*86400000;manager=new ConversationSessions(backend,store,()=>true,()=>[{id:'finch',title:'Glass Finch'}]);
     await consume(manager.respond(provider,messages('Return to Glass Finch please'),options(),req));manager.delivered();
-    expect(backend.resumed).toContain(id);expect(backend.starts).toHaveLength(2);expect(cognition.context()).toContain('abandoned');
+    expect(backend.resumed).toContain(id);expect(backend.starts).toHaveLength(2);expect(cognition.context()).toContain('"questions":[]');expect(cognition.context()).not.toContain('Which design should we inspect?');
   }finally{clock.mockRestore();}
 });
 it('isolates off-record and source turns and never resumes them after restart or revocation',async()=>{

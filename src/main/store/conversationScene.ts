@@ -3,7 +3,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { readJson, writeJsonAtomic } from './jsonFile';
 import { dialoguePatterns, type ConversationSceneState, type SceneEntry, type SceneReading } from '../../shared/conversationScene';
-import { isContact } from '../../shared/dialogueContinuity';
+import { isContact, unrelatedTurn } from '../../shared/dialogueContinuity';
 import type { Checkpoints } from '../../core/contracts';
 import { retainedConversation } from '../../core/conversation';
 import { readLegacyCheckpoint } from './checkpointImport';
@@ -85,6 +85,12 @@ export class ConversationScene {
   context(event = 'chat', alreadyIncluded: ReadonlySet<string> = new Set(), excludedSources:ReadonlySet<string>=new Set()) {
     if (!this.enabled()) return '';
     const state = this.snapshot();state.entries=state.entries.filter(e=>!e.contextSources?.some(id=>excludedSources.has(id)));if(state.reading&&!state.entries.some(e=>e.id===state.reading?.sourceId))state.reading=undefined; if (!state.entries.length) return '';
+    const latestUser=state.entries.findLast(e=>e.role==='user'&&!isContact(e));
+    if(latestUser&&unrelatedTurn(latestUser.text)){
+      // Keep waiting subjects stored, while an explicit change of topic gets
+      // room to stand on its own in both chat and ambient inference.
+      state.entries=state.entries.slice(state.entries.indexOf(latestUser));state.reading=undefined;
+    }
     const readingSource = state.entries.find(e => e.id === state.reading?.sourceId);
     const newerUser = readingSource && state.entries.some(e => e.role === 'user' && e.at > readingSource.at);
     const lines = state.entries.filter(e => e.role === 'assistant').map(e => e.text).slice(-6);

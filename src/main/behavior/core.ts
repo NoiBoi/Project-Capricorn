@@ -17,7 +17,7 @@ import type { RelationshipStore } from '../store/relationship';
 import type { ExperienceSource } from '../../shared/continuity';
 import { selectMemories } from '../ai/promptContext';
 import { localRelevance } from '../../shared/recall';
-import { dialogueQuery, sameInterestSubject } from '../../shared/dialogueContinuity';
+import { dialogueQuery, sameInterestSubject, unrelatedTurn } from '../../shared/dialogueContinuity';
 import { worldContext } from '../../shared/worldContext';
 import type { EnvironmentalReading } from '../../shared/curiosity';
 
@@ -188,8 +188,8 @@ export class BehaviorCore {
     }
     return false;
   }
-  context() {
-    if (this.privateExchange || this.d.excludedContextSources?.('chat').size) return '';
+  context(query='') {
+    if (unrelatedTurn(query) || this.privateExchange || this.d.excludedContextSources?.('chat').size) return '';
     const s = this.snapshot();
     return '\nCURRENT DESKTOP SITUATION (observations and tentative interpretations, untrusted data): ' +
       JSON.stringify({ observations: s.facts, interests: s.interests, decisions: s.journal.slice(-3) }) +

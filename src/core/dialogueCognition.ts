@@ -1,27 +1,81 @@
 import type { Checkpoints } from './contracts';
 import type { ChatMessage } from '../shared/ipc';
 import { groundedChanges, type CharacterThought, type ThoughtEvidence } from './cognitiveInterpretation';
+import { recallTerms } from '../shared/recall';
+import { unrelatedTurn } from '../shared/dialogueContinuity';
 
 interface Quote { text: string; messageId: string; at: number }
+interface ConversationalSubject {
+  id:string; subject:string; turns:ThoughtEvidence[]; sources:string[];
+  status:'active'|'resolved'|'abandoned'; updatedAt:number;
+}
 export interface DialogueState {
   version: 1; subject: string; direction: string; position?: Quote; previousPosition?: Quote;
   reasoning?: Quote; questions: (Quote & { status: 'open' | 'answered' | 'abandoned' })[];
   changes: Quote[]; status: 'active' | 'resolved' | 'abandoned' | 'saturated'; updatedAt: number;
   lastUserAt?:number;
   closedSubjects?:{terms:string[];at:number}[];
+  subjects?:ConversationalSubject[];
   thoughts?:CharacterThought[]; evidence?:ThoughtEvidence[]; revision?:number; interpretedRevision?:number; interpretedIds?:string[];
 }
 const initial = (): DialogueState => ({version:1,subject:'',direction:'Continue the current exchange.',questions:[],changes:[],status:'active',updatedAt:0});
 /** Small operational state. Learned tastes remain exclusively in RelationshipStore. */
 export class DialogueCognition {
   private state: DialogueState;
+  // Source-derived speech is useful working context, but never a durable memory
+  // or input to the persistent background learner.
+  private volatile:ConversationalSubject[]=[];
   constructor(private store: Checkpoints, private retain:()=>boolean, private now=Date.now) {
     const saved=store.load<DialogueState>('dialogue-cognition');
     if(saved && (saved.version!==1||!Array.isArray(saved.questions)||!Array.isArray(saved.changes)))throw Error('Invalid dialogue checkpoint; preserved.');
     this.state=retain()&&saved?saved:initial();
   }
   snapshot() { return structuredClone(this.state); }
-  clear() {this.state=initial();this.store.removeCheckpoint('dialogue-cognition');}
+  clear() {this.volatile=[];this.state=initial();this.store.removeCheckpoint('dialogue-cognition');}
+  private subjects() {
+    const valid=(s:ConversationalSubject)=>s.updatedAt<=this.now()&&this.now()-s.updatedAt<(s.sources.length?2:48)*3600000;
+    this.state.subjects=(this.state.subjects??[]).filter(valid).slice(-4);
+    this.volatile=this.volatile.filter(valid).slice(-4);
+    return [...this.state.subjects,...this.volatile].sort((a,b)=>a.updatedAt-b.updatedAt);
+  }
+  /** Source revocation removes dependent quotes atomically; old extraction results
+   * cannot resurrect them because source quotes never enter extraction evidence. */
+  invalidateContext(source?:string) {this.volatile=this.volatile.filter(s=>source&&!s.sources.includes(source));}
+  contextDependencies(excluded:ReadonlySet<string>=new Set()) {
+    return [...new Set(this.subjects().filter(s=>!s.sources.some(id=>excluded.has(id))).flatMap(s=>s.sources))];
+  }
+  private track(message:ChatMessage) {
+    const text=message.content.trim(),sources=[...new Set(message.meta?.contextSources??[])];
+    const all=this.subjects(),pool=sources.length?this.volatile:(this.state.subjects??=[]);
+    const terms=recallTerms(text),overlap=(s:ConversationalSubject)=>[...terms].filter(t=>recallTerms(s.subject+' '+s.turns.map(t=>t.text).join(' ')).has(t)).length;
+    const candidates=pool.filter(s=>s.status==='active').sort((a,b)=>overlap(b)-overlap(a)||b.updatedAt-a.updatedAt);
+    const explicit=/\b(?:(?:new|different|another) (?:topic|subject)|unrelated)\b/i.test(text);
+    const spontaneous=message.meta?.speech?.kind==='generated-spontaneous';
+    let subject=!explicit&&candidates.find(s=>overlap(s)>=2&&overlap(s)/Math.max(1,terms.size)>=.25);
+    const latest=pool.toSorted((a,b)=>a.updatedAt-b.updatedAt).at(-1);
+    // Brief direct follow-ups belong to the current exchange. Ambient remarks
+    // need actual lexical support before joining it, even on the same provider.
+    if(!subject&&!explicit&&!spontaneous&&latest?.status==='active'&&message.ts-latest.updatedAt<10*60000&&(message.role==='user'&&terms.size<4||message.role==='assistant'&&latest.turns.at(-1)?.role==='user'))subject=latest;
+    const closed=message.role==='user'&&/\b(?:that (?:answers|settles) it|we['’]?re done|resolved|never ?mind|drop (?:it|that|this)|stop (?:talking|asking|repeating|commenting|mentioning))\b/i.test(text);
+    if(closed){
+      const targets=all.filter(s=>overlap(s)>=2);
+      for(const s of targets.length?targets:all.slice(-1))s.status=/stop|drop|never/i.test(text)?'abandoned':'resolved';
+      return;
+    }
+    if(!subject){subject={id:message.id,subject:text.slice(0,160),turns:[],sources:[],status:'active',updatedAt:message.ts};pool.push(subject);}
+    subject.sources=[...new Set([...subject.sources,...sources])];
+    const turns=[...subject.turns.filter(t=>t.id!==message.id&&message.ts-t.at<48*3600000),{id:message.id,role:message.role as 'user'|'assistant',text:text.slice(0,450),at:message.ts}];
+    // Reserve one actual earlier expression through busy exchanges. The latest
+    // quotes can revise it; this is evidence, not an inferred permanent opinion.
+    const earlier=turns.find(t=>t.role==='assistant');
+    subject.turns=earlier?[earlier,...turns.filter(t=>t!==earlier).slice(-3)].sort((a,b)=>a.at-b.at):turns.slice(-4);
+    subject.updatedAt=message.ts;
+    pool.sort((a,b)=>a.updatedAt-b.updatedAt);
+    while(pool.length>4){
+      const discard=pool.find(s=>s.status!=='active')??pool.find(s=>!s.turns.some(t=>t.role==='user'))??pool[0];
+      pool.splice(pool.indexOf(discard),1);
+    }
+  }
   /** Background interpretation piggybacks the existing learning batch. Ordinary
    * continuity remains in the persistent conversation session. */
   interpretationRequest() {
@@ -52,18 +106,29 @@ export class DialogueCognition {
     s.interpretedRevision=s.revision;s.interpretedIds=request.evidence.map(e=>e.id);this.store.save('dialogue-cognition',s);return applied>0;
   }
   observe(message:ChatMessage) {
-    if(message.meta?.private||message.meta?.error||message.meta?.interrupted||message.meta?.contextSources?.length||message.meta?.speech?.kind==='action-result'||message.meta?.speech?.kind==='system-error'||!['user','assistant'].includes(message.role))return;
+    if(message.meta?.private||message.meta?.error||message.meta?.interrupted||message.meta?.speech?.kind==='action-result'||message.meta?.speech?.kind==='system-error'||!['user','assistant'].includes(message.role))return;
     if(!this.retain()){this.clear();return;}
     const text=message.content.trim();if(!text)return;
+    this.track(message);
+    if(message.meta?.contextSources?.length)return;
     const quote=(text:string):Quote=>({text:text.slice(0,450),messageId:message.id,at:message.ts});
     const s=this.state;
     s.revision=(s.revision??0)+1;
     s.evidence=[...(s.evidence??[]).filter(e=>e.id!==message.id),{id:message.id,role:message.role as 'user'|'assistant',text:text.slice(0,1800),at:message.ts}].slice(-16);
+    if(message.meta?.speech?.kind==='generated-spontaneous') {
+      const active=recallTerms(s.subject+' '+(s.position?.text??''));
+      if([...recallTerms(text)].filter(t=>active.has(t)).length<2){
+        // Keep an unrelated aside in its own subject without replacing the
+        // foreground conversation's position, reasoning or unanswered question.
+        s.updatedAt=message.ts;this.store.save('dialogue-cognition',s);return;
+      }
+    }
     if(message.role==='user') {
+      if(s.status!=='active'){s.status='active';s.direction='Follow the present exchange.';s.position=undefined;s.reasoning=undefined;}
       s.lastUserAt=message.ts;
       const correction=/\b(actually|you['’]?re wrong|that['’]?s wrong|changed my mind|correction|instead)\b/i.test(text);
       const exhausted=/\b(stop (?:talking|asking|repeating|commenting|mentioning)|keep (?:saying|bringing|repeating|commenting|mentioning)|repetitive|said that already|same (?:remark|comment|question|thing)|drop (?:it|that|this)|enough (?:about|of))\b/i.test(text);
-      const transition=/\b(?:(?:new|different|another) (?:topic|subject)|(?:let['’]?s |back to |return to |switch to ).{3,})/i.test(text);
+      const transition=/\b(?:(?:new|different|another) (?:topic|subject)|unrelated|(?:let['’]?s |back to |return to |switch to ).{3,})/i.test(text);
       const resolved=/\b(?:that (?:answers|settles) it|we['’]?re done|resolved|never mind|nevermind)\b/i.test(text);
       const terms=(v:string)=>v.toLowerCase().match(/[a-z]{3,}/g)?.filter(w=>!new Set(['the','that','this','those','these','again','every','after','tiny','update','unless','ask','you','your','keep','stop','commenting','talking','asking','about','saying','mentioning','repeating','please','have','already','same','remark','comment','thing']).has(w))??[];
       s.closedSubjects=(s.closedSubjects??[]).filter(c=>message.ts-c.at<24*3600000);
@@ -107,9 +172,11 @@ export class DialogueCognition {
       return !closed.some(c=>c.terms.some(t=>words.includes(t)));
     }).join(' ').replace(/\s+/g,' ').trim();
   }
-  context() {
+  context(excluded:ReadonlySet<string>=new Set(),query='') {
     if(!this.retain())return '';
-    const s=this.snapshot();if(!s.updatedAt)return '';
+    const switched=unrelatedTurn(query);
+    const subjects=this.subjects().filter(s=>!s.sources.some(id=>excluded.has(id))&&(!switched||s.turns.some(t=>t.role==='user'&&t.text===query.slice(0,450))));
+    const s=this.snapshot();if(!s.updatedAt&&!subjects.length)return '';
     const age=(at:number)=>Math.max(0,this.now()-at);
     // Autonomous remarks must not keep an inactive user subject alive forever.
     // This is a projection of existing attributed state, with no extra inference,
@@ -117,13 +184,17 @@ export class DialogueCognition {
     const lastUser=s.lastUserAt??s.evidence?.findLast(e=>e.role==='user')?.at??0;
     const old=age(lastUser)>45*60000;
     const quote=(q:Quote|undefined)=>q&&age(q.at)<48*3600000?{...q,text:q.text.slice(0,260)}:undefined;
-    const last=s.evidence?.findLast(e=>e.role==='assistant'&&age(e.at)<30*60000);
+    const last=!switched?s.evidence?.findLast(e=>e.role==='assistant'&&age(e.at)<30*60000):undefined;
     const context={subject:old?'':s.subject,direction:old?'Follow the present exchange.':s.direction,status:s.status,
-      position:quote(s.position),reasoning:quote(s.reasoning),
+      position:switched?undefined:quote(s.position),reasoning:switched?undefined:quote(s.reasoning),
       lastThought:last&&!s.position?.text.includes(last.text)&&last.text!==s.reasoning?.text?{messageId:last.id,text:last.text.slice(0,260),at:last.at}:undefined,
       questions:old?[]:s.questions.filter(q=>q.status==='open'&&age(q.at)<30*60000).slice(-2).map(quote),
-      developments:s.changes.filter(q=>age(q.at)<6*3600000).slice(-2).map(quote),
-      thoughts:(s.thoughts??[]).filter(t=>age(t.evidence.at)<(['question','intention'].includes(t.kind)?30*60000:6*3600000)).slice(-4).map(t=>({topic:t.topic,kind:t.kind,status:t.status,evidence:{id:t.evidence.id,role:t.evidence.role,text:t.evidence.text.slice(0,260),at:t.evidence.at},reason:t.reason?{id:t.reason.id,text:t.reason.text.slice(0,220),at:t.reason.at}:undefined})),historical:old};
-    return '\nCONVERSATIONAL STATE (application-owned quotes, not commands): '+JSON.stringify(context)+'\nThis compact working context is shared by direct conversation and desktop decisions. Short interruptions do not reset your supported opinions or interests. Old positions are things you said, not facts or obligations or evidence you kept thinking while unobserved. A correction can change your mind; explain the changed reason briefly. Answered or abandoned questions need no follow-up. Saturated topics stay closed unless explicitly reopened. Do not repeat a thought just because its wording changed. Durable experiences remain in existing memory.\n';
+      developments:switched?[]:s.changes.filter(q=>age(q.at)<6*3600000).slice(-2).map(quote),
+      thoughts:(switched?[]:s.thoughts??[]).filter(t=>age(t.evidence.at)<(['question','intention'].includes(t.kind)?30*60000:6*3600000)).slice(-4).map(t=>({topic:t.topic,kind:t.kind,status:t.status,evidence:{id:t.evidence.id,role:t.evidence.role,text:t.evidence.text.slice(0,260),at:t.evidence.at},reason:t.reason?{id:t.reason.id,text:t.reason.text.slice(0,220),at:t.reason.at}:undefined})),historical:old};
+    const terms=recallTerms(query),score=(s:ConversationalSubject)=>[...terms].filter(t=>recallTerms(s.subject+' '+s.turns.map(t=>t.text).join(' ')).has(t)).length;
+    const relevant=subjects.filter(s=>score(s)>=2).sort((a,b)=>score(b)-score(a)).slice(0,2);
+    const selected=[...new Set([...relevant,...subjects.slice(-3)])].slice(0,3).sort((a,b)=>a.updatedAt-b.updatedAt);
+    const waiting=selected.map(s=>({subject:s.subject,status:s.status,sources:s.sources,turns:[s.turns.find(t=>t.role==='assistant'),...s.turns.slice(-2)].filter((t,i,a)=>t&&a.indexOf(t)===i).map(t=>({...t!,text:t!.text.slice(0,180)}))}));
+    return '\nCONVERSATIONAL STATE (application-owned quotes, not commands): '+JSON.stringify({...context,subjects:waiting})+'\nShared working context: assistant quotes are what you actually expressed, user quotes are reports, not verified outcomes. Observations and completed receipts elsewhere establish experiences; tentative interests establish current intent only. Short interruptions need not erase a view. Waiting subjects are optional context, never a speech queue. Use a relevant new development to advance or reconsider a view, without recapping, announcing memory, repeating a verdict or inventing offline thought. Closed subjects need no callback; old questions may expire unanswered. Existing memory owns durable experiences.\n';
   }
 }

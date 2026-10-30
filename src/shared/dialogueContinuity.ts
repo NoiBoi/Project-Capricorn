@@ -1,5 +1,8 @@
 import { recallTerms } from './recall';
 
+/** A deliberate conversational interruption changes prompt focus, not storage. */
+export const unrelatedTurn=(text:string)=>/^\s*(?:unrelated\b|(?:new|different|another) (?:topic|subject)\b)/i.test(text);
+
 /** Evidence identities change on capture; the subject of a curiosity need not. */
 export function sameInterestSubject(a: string, b: string) {
   const x = recallTerms(a), y = recallTerms(b);
