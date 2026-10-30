@@ -662,6 +662,7 @@ async function init() {
       modelSessions.delivered();
       cognitiveRuntime.observeMessage(message);
       if (!message.meta?.private && !message.meta?.error && !message.meta?.interrupted) {
+        if(message.meta?.contextSources?.includes('activity-patterns'))interactionProfile.activityDelivered(message.content);
         personalContext.replyDelivered(userId, message.id, message.ts);
         personalContext.delivered(message.content);
       }
@@ -1819,6 +1820,7 @@ function rememberScene(kind: 'said' | 'action', text: string, surface?: string, 
       const message:ChatMessage={id,role:'assistant',content:text,ts:at,meta:{speech,provider:'companion',contextSources,private:behavior?.diagnostics().privateExchange??false}};
       history.append(message);toPanel('chat:message',{message});
       cognitiveRuntime.observeMessage(message);
+      if(contextSources.includes('activity-patterns'))interactionProfile.activityDelivered(text);
     }
   }
 }
@@ -2705,7 +2707,7 @@ function presenceTick() {
     interest:behavior.opportunityReady()&&activityTarget&&behavior.preferredTarget()===String(activityTarget)?{key,revision:conversationScene.snapshot().revision}:undefined,
     outing:!behavior.pending()?outingThought??undefined:undefined});
   const effect=cognitiveRuntime.sample({at:now,idleSec,sleepAfter:s.behavior.sleepAfterMinutes*60,date:new Date().toLocaleDateString('en-CA'),hour:local?.hour??new Date().getHours(),
-    windows:visibleObservationWindows(now), engaged:cognitiveRuntime.dialogueEngaged()&&now-cognitiveRuntime.dialogue.snapshot().updatedAt<90000||behavior.pending()&&behavior.preferredTarget()===String(activityTarget),
+    windows:visibleObservationWindows(now), engaged:cognitiveRuntime.dialogueEngaged()||behavior.pending()&&behavior.preferredTarget()===String(activityTarget),
     active:info&&activityTarget?{id:String(activityTarget),key,title:info.title}:undefined,
     watched:watched?{id:String(watched),key:watchedKey,video:!!info&&dialogueSurface(info)==='youtube'}:undefined,
     video:info&&activityTarget&&dialogueSurface(info)==='youtube'?{id:String(activityTarget),key}:undefined,

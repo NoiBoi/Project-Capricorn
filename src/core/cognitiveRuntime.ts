@@ -71,8 +71,9 @@ export class CognitiveRuntime {
     if (['pat','poke','putdown','placed_window','own_panel'].includes(event)) {
       if (!engaged && !development) return false;
       const revision = development || state.evidence?.findLast(e => e.role === 'user')?.id || String(state.updatedAt);
-      if (this.dialogueAdmissions.get(key) === revision) return false;
-      this.dialogueAdmissions.set(key, revision);
+      const admissionKey=development?key:'social-participation';
+      if (this.dialogueAdmissions.get(admissionKey) === revision) return false;
+      this.dialogueAdmissions.set(admissionKey, revision);
       if (this.dialogueAdmissions.size > 32) this.dialogueAdmissions.delete(this.dialogueAdmissions.keys().next().value!);
     }
     return true;

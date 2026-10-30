@@ -61,7 +61,8 @@ it('lets an unanswered aside end engagement without erasing its interest, then r
  expect(f.d.context()).toContain('wants to escape');
  f.say('u2','user','Escape where?');expect(f.d.engagement()).toMatchObject({engaged:true,unansweredRemarks:0});
  f.say('a2','assistant','Somewhere with less paperwork.');expect(f.d.engagement().engaged).toBe(true);
- f.advance(90001);expect(f.d.engagement().engaged).toBe(false);expect(f.d.context()).toContain('wants to escape');
+ f.advance(90001);expect(f.d.engagement().engaged).toBe(true);expect(f.d.context()).toContain('wants to escape');
+ f.say('ack','user','Fair enough.');expect(f.d.engagement().engaged).toBe(false);
 });
 it('projects source exclusions and revocation without leaking an unanswered private aside into engagement',()=>{
  const f=fixture();f.say('u','user','Show me a mug.');
@@ -83,4 +84,12 @@ it('treats a plain sign-off as disengagement while an engaged follow-up still co
  f.say('occupied','user','I need to focus.');expect(f.d.engagement().engaged).toBe(false);
  expect(f.d.context()).toContain('curved bracket');
  f.say('followup','user','Thanks, but why the curved one?');expect(f.d.engagement().engaged).toBe(true);
+});
+
+it('keeps a longer pronoun follow-up with its exchange after silence, without creating aside questions',()=>{
+ const f=fixture();f.say('mug','assistant','A mug handle long enough for a robbery.',{speech:{kind:'generated-spontaneous'}});
+ f.advance(12*60000);f.say('reply','user','You could steal my coffee from the other side of the desk. Worth the risk?');
+ expect(f.d.snapshot().subjects?.find(s=>s.id==='mug')?.turns.some(t=>t.id==='reply')).toBe(true);
+ f.say('answer','assistant','Worth it.');f.say('aside','assistant','Another coffee robbery?',{speech:{kind:'generated-spontaneous'}});
+ expect(f.d.engagement()).toMatchObject({engaged:false,purpose:'opening'});expect(f.d.snapshot().questions).toEqual([]);
 });

@@ -173,14 +173,16 @@ describe('authoritative cognitive event sequences, real SQLite and XState',()=>{
     f.runtime.observeMessage({id:'u1',role:'user',content:'I want to keep the new movement while changing when you speak.',ts:f.at});
     expect(f.runtime.admitDialogue('pat')).toBe(true);
     expect(f.runtime.admitDialogue('pat')).toBe(false);
-    expect(f.runtime.admitDialogue('own_panel')).toBe(true);
+    expect(f.runtime.admitDialogue('own_panel')).toBe(false);
     f.advance(1000);
     f.runtime.observeMessage({id:'a1',role:'assistant',content:'I prefer having room to move.',ts:f.at});
     expect(f.runtime.admitDialogue('own_panel')).toBe(false);
     f.advance(1000);
     f.runtime.observeMessage({id:'u2',role:'user',content:'Yes, keep that freedom of movement and let the words follow your thoughts.',ts:f.at});
     expect(f.runtime.admitDialogue('pat')).toBe(true);
-    f.advance(601000);expect(f.runtime.admitDialogue('poke')).toBe(false);
+    f.advance(601000);expect(f.runtime.admitDialogue('poke')).toBe(false); // same participation already used by pat, regardless of elapsed time
+    f.runtime.observeMessage({id:'u3',role:'user',content:'Why not keep the longer handle instead?',ts:f.at});
+    f.advance(601000);expect(f.runtime.admitDialogue('poke')).toBe(true);
   });
   it('allows fresh discussion without a speech timer while retaining attention, composer and audio ownership',()=>{
     const f=fixture();f.runtime.offer(f.opportunity());f.runtime.decide();expect(f.runtime.claim('behavior')).toBe(true);
@@ -207,4 +209,14 @@ it('does not use an unanswered aside to admit contact elaboration or block impor
  expect(f.runtime.admitDialogue('pat','pat',false,'new-material')).toBe(true);
  f.runtime.offer({...f.opportunity('reminder'),event:'personal_followup',important:true});
  expect(f.runtime.decide()?.opportunity.id).toBe('reminder');
+});
+
+it('does not spend a model call pursuing an ignored social interest, while a due notice still gets admission',async()=>{
+ const f=fixture();f.runtime.observeMessage({id:'aside',role:'assistant',content:'That handle has ambitions.',ts:f.at,meta:{speech:{kind:'generated-spontaneous'}}});
+ let calls=0;const core=new BehaviorCore({directory:f.dir,cognition:f.runtime,scene:new ConversationScene(f.dir,()=>true,()=>true,()=>f.at),now:()=>f.at,memories:()=>[],provider:{name:'fixture',local:true,test:async()=>({ok:true,detail:''}),listModels:async()=>[],async *stream(){calls++;yield JSON.stringify({interpretation:'A due reminder.',interest:null,action:'speak',line:'The memo is due.',gesture:'none',reason:'Due obligation.'});}},express:()=>true});
+ f.runtime.offer(f.opportunity('interest'));let effect=f.runtime.decide()!;expect(f.runtime.claim('behavior')).toBe(true);
+ expect((await core.dispatch({kind:'trigger',event:'opportunity',direct:false,detail:'Existing interest, no new evidence.'})).reason).toContain('unanswered social');expect(calls).toBe(0);
+ f.runtime.release('behavior');f.runtime.settle(effect,'completed');f.runtime.offer({...f.opportunity('due'),important:true,event:'personal_followup'});effect=f.runtime.decide()!;expect(f.runtime.claim('behavior')).toBe(true);
+ expect((await core.dispatch({kind:'trigger',event:'personal_followup',direct:false,detail:'Explicit memo reminder is due.'})).delivered).toBe(true);expect(calls).toBe(1);
+ f.runtime.release('behavior');f.runtime.settle(effect,'completed');
 });

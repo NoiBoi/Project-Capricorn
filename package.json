@@ -1,6 +1,6 @@
 {
   "name": "capri-buddy",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "main": "dist/main/index.js",
   "scripts": {
     "build": "node scripts/build.mjs",

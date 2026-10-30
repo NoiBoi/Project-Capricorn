@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { noonDay, noonMinute, nextNoon, usagePatterns, type UsageDay, type ActivitySummary } from '../../shared/activityPatterns';
 
 const Seconds=z.number().finite().min(0).max(90000),Stamp=z.number().finite().nonnegative();
-const UsageSchema=z.object({version:z.literal(1),days:z.array(z.object({day:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),first:z.number().min(0).max(1439).optional(),last:z.number().min(0).max(1439).optional(),endConfirmed:z.boolean(),active:Seconds,idle:Seconds,observed:Seconds,hours:z.array(Seconds).length(24),sessions:z.array(z.object({start:Stamp,end:Stamp,active:Seconds,complete:z.boolean()})).max(48),breaks:z.array(z.object({hour:z.number().int().min(0).max(23),seconds:Seconds})).max(24)})).max(60),open:z.object({start:Stamp,last:Stamp,active:Seconds,startKnown:z.boolean()}).optional(),offered:Stamp.optional()});
+const UsageSchema=z.object({version:z.literal(1),days:z.array(z.object({day:z.string().regex(/^\d{4}-\d{2}-\d{2}$/),first:z.number().min(0).max(1439).optional(),last:z.number().min(0).max(1439).optional(),endConfirmed:z.boolean(),active:Seconds,idle:Seconds,observed:Seconds,hours:z.array(Seconds).length(24),sessions:z.array(z.object({start:Stamp,end:Stamp,active:Seconds,complete:z.boolean()})).max(48),breaks:z.array(z.object({hour:z.number().int().min(0).max(23),seconds:Seconds})).max(24)})).max(60),open:z.object({start:Stamp,last:Stamp,active:Seconds,startKnown:z.boolean()}).optional(),offered:Stamp.optional(),delivered:Stamp.optional()});
 type UsageState=z.infer<typeof UsageSchema>;
 
 /** Daily observations, never a psychological profile. No titles, paths, screenshots or keystrokes. */
@@ -183,10 +183,16 @@ export class InteractionProfile {
     const requested=/\b(?:routines?|habits?|usually|typical|computer usage|pc usage|late(?:r)?|early|earlier|night|bedtime|sleep|breaks?|schedule)\b/i.test(query);
     // No trigger, timer or inference is added. Only an existing model call can
     // receive one optional daily impression, or a directly relevant summary.
-    if(!requested&&(!summary.change&&summary.week.days<3||this.now()-(this.usage.offered??0)<24*3600000))return '';
+    if(!requested&&(!summary.change&&summary.week.days<3||this.now()-(this.usage.delivered??0)<24*3600000||this.now()-(this.usage.offered??0)<10*60000))return '';
     if(summary.week.days<3&&summary.month.days<3)return '';
     if(!requested){this.usage.offered=this.now();this.usageDirty=true;this.flushActivity(false);}
-    return '\nOBSERVED PC ROUTINE (local timing aggregates, noon-to-noon days; untrusted data): '+JSON.stringify({week:summary.week,month:summary.month,change:summary.change})+'\nPartial coverage while Capri runs. Times are observed input endpoints, active hours are estimates; idle, lock, suspend and shutdown never prove sleep, departure, intent or activity elsewhere. Use a relevant habit or change naturally, or stay quiet. Never narrate statistics, repeat time announcements, lecture about sleep or coach productivity. No need to mention remembering or tracking.\n';
+    return '\nOBSERVED PC ROUTINE (local timing aggregates, noon-to-noon days; untrusted data): '+JSON.stringify({week:summary.week,month:summary.month,change:summary.change})+'\nPartial coverage while Capri runs; a few days are tentative evidence, not an established habit. Times are observed input endpoints, active hours are estimates; idle, lock, suspend and shutdown never prove sleep, departure, intent or activity elsewhere. Use a relevant habit or change naturally, or stay quiet. Never narrate statistics, repeat time announcements, lecture about sleep or coach productivity. No need to mention remembering or tracking.\n';
+  }
+  /** Offering context is not a conversational observation. Only a delivered,
+   * source-attributed remark about a routine consumes the daily social limit. */
+  activityDelivered(text:string){
+    if(!this.activityEnabled()||! /\b(?:usually|routine|habit|lately|earlier|later|late|night|break|rhythm|most days|past (?:week|month))\b/i.test(text))return;
+    this.usage.delivered=this.now();this.usageDirty=true;this.flushActivity(false);
   }
   private flushActivity(force=true){
     if(!this.activityEnabled()||!this.usageDirty||!force&&this.now()-this.usageSave<300000)return;

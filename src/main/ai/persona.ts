@@ -1,7 +1,7 @@
 import type { Settings } from '../../shared/settings';
 import type { MemoryItem } from '../../shared/ipc';
 import { toolCatalogForPrompt } from '../actions/registry';
-import { CAPRI_DIALOGUE_REGISTER, CAPRI_MISCHIEF_DIRECTION, CAPRI_SCENE_VOICE } from '../../shared/capriVoice';
+import { CAPRI_DIALOGUE_REGISTER, CAPRI_SCENE_VOICE } from '../../shared/capriVoice';
 import { worldContext } from '../../shared/worldContext';
 import { selectMemories } from './promptContext';
 import { companionPersonalContext } from '../../shared/userIdentity';
@@ -106,7 +106,7 @@ const LENGTH: Record<Settings['ai']['responseLength'], string> = {
 };
 
 export function buildCharacterInstructions(s: Settings): string {
-  return [...(s.character.personality ? [CAPRI_SCENE_VOICE, CAPRI_DIALOGUE_REGISTER, CAPRI_MISCHIEF_DIRECTION] : []), ...PERSONA_CANON, ...GUARDRAILS].join('\n');
+  return [...(s.character.personality ? [CAPRI_SCENE_VOICE, CAPRI_DIALOGUE_REGISTER] : []), ...PERSONA_CANON, ...GUARDRAILS].join('\n');
 }
 
 export function buildSystemPrompt(s: Settings, memories: MemoryItem[], now = new Date(), options: { actions?: boolean; compact?: boolean; examples?: boolean; userText?: string; recallText?: string } = {}): string {
@@ -131,7 +131,7 @@ export function buildSystemPrompt(s: Settings, memories: MemoryItem[], now = new
   const actions = options.actions !== false;
   const acting = live ? buildCharacterInstructions(s) : [...PERSONA_INTERPRETATION, ...PERSONA_CANON, ...GUARDRAILS].join('\n');
   return `${acting}
-${live ? '' : CAPRI_DIALOGUE_REGISTER + '\n' + CAPRI_MISCHIEF_DIRECTION}
+${live ? '' : CAPRI_DIALOGUE_REGISTER}
 ${worldContext(options.userText ?? '')}
 
 ${live ? '' : options.examples === false ? performanceScenes(options.userText ?? '') : DIALOGUE_EXAMPLES.map(([situation, reply]) => `Situation: ${situation}\nPossible delivery: ${reply}`).join("\n\n")}

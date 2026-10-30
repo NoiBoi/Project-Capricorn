@@ -55,7 +55,7 @@ export class DialogueCognition {
     const latest=pool.toSorted((a,b)=>a.updatedAt-b.updatedAt).at(-1);
     // Brief direct follow-ups belong to the current exchange. Ambient remarks
     // need actual lexical support before joining it, even on the same provider.
-    if(!subject&&!explicit&&!spontaneous&&latest?.status==='active'&&message.ts-latest.updatedAt<10*60000&&(message.role==='user'&&terms.size<4||message.role==='assistant'&&latest.turns.at(-1)?.role==='user'))subject=latest;
+    if(!subject&&!explicit&&!spontaneous&&latest?.status==='active'&&(message.role==='user'&&(terms.size<4||/^(?:but |and |so |why |how |what about |would |could |isn['’]?t |that |it |you )/i.test(text))||message.role==='assistant'&&latest.turns.at(-1)?.role==='user'))subject=latest;
     const closed=message.role==='user'&&/\b(?:that (?:answers|settles) it|we['’]?re done|resolved|never ?mind|drop (?:it|that|this)|stop (?:talking|asking|repeating|commenting|mentioning))\b/i.test(text);
     if(closed){
       const targets=all.filter(s=>overlap(s)>=2);
@@ -82,10 +82,13 @@ export class DialogueCognition {
     const turns=[...new Map(this.subjects().filter(s=>!s.sources.some(id=>excluded.has(id))).flatMap(s=>s.turns).map(t=>[t.id,t])).values()].sort((a,b)=>a.at-b.at);
     const user=turns.findLast(t=>t.role==='user'),last=turns.at(-1);
     const unansweredRemarks=turns.filter(t=>t.role==='assistant'&&t.aside&&t.at>(user?.at??0)).length;
-    const age=last?this.now()-last.at:Infinity;
-    const closedByUser=!!user&&/^(?:(?:ok(?:ay)?[,.!]? )?(?:thanks|thank you|that'?s all)|(?:I (?:need to|have to|gotta)|let me|back to) (?:get back to )?(?:work|focus|concentrate)[.! ]*)[.! ]*$/i.test(user.text.trim());
-    const engaged=this.state.status==='active'&&!closedByUser&&!!user&&this.now()-user.at<3*60000&&age>=0&&age<90000&&!unansweredRemarks;
-    return {engaged,unansweredRemarks,lastTurnAt:last?.at};
+    // Participation and closure, not a stopwatch. Host availability and
+    // per-revision admission still govern interruptions.
+    const closedByUser=!!user&&/^(?:(?:ok(?:ay)?|yep|yeah|sure|fair(?: enough)?|cool|nice|lol|ha(?:ha)?|thanks|thank you|that['’]?s all)[,.! ]*|(?:I (?:need to|have to|gotta)|let me|back to) (?:get back to )?(?:work|focus|concentrate)[.! ]*)$/i.test(user.text.trim());
+    const subject=this.subjects().find(s=>s.turns.some(t=>t.id===user?.id));
+    const engaged=subject?.status==='active'&&this.state.status==='active'&&!closedByUser&&!!user&&!unansweredRemarks;
+    const purpose=unansweredRemarks?(last?.text.trim().endsWith('?')?'opening':'aside'):engaged?'discussion':'company';
+    return {engaged,unansweredRemarks,purpose,awaitingUser:last?.role==='assistant',lastTurnAt:last?.at};
   }
   /** Background interpretation piggybacks the existing learning batch. Ordinary
    * continuity remains in the persistent conversation session. */
@@ -168,7 +171,7 @@ export class DialogueCognition {
       const position=sentences.find(t=>/\b(?:I (?:prefer|like|love|hate|think|choose|pick|would|want|vote)|I['’]d|my (?:view|vote|pick|opinion))\b/i.test(t));
       if(position) {if(s.position?.text!==position.trim()){s.previousPosition=s.position;s.reasoning=undefined;}s.position=quote(position.trim());}
       const reason=sentences.find(t=>/\b(?:because|since|reason|means|costs|rather than)\b/i.test(t));if(reason)s.reasoning=quote(reason.trim());
-      if(s.status==='active')for(const t of sentences.filter(t=>t.trim().endsWith('?')).slice(-2))s.questions.push({...quote(t.trim()),status:'open'});
+      if(s.status==='active'&&message.meta?.speech?.kind!=='generated-spontaneous')for(const t of sentences.filter(t=>t.trim().endsWith('?')).slice(-2))s.questions.push({...quote(t.trim()),status:'open'});
       s.questions=s.questions.slice(-6);
     }
     s.updatedAt=message.ts;this.store.save('dialogue-cognition',s);

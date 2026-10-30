@@ -36,3 +36,14 @@ it('provides compact context selectively, honors retention and deletes timing hi
  p.touch('pat');p.flush();enabled=false;p.privacyChanged();expect(fs.existsSync(path.join(dir,'activity-usage.json'))).toBe(false);expect(p.activityContext('my routine')).toBe('');expect(p.summary().interactions.pat).toBe(1);
  enabled=true;expect(p.activitySummary().daysObserved).toBe(0);
 });
+
+it('separates offered routine context from delivered observations without strengthening evidence',()=>{
+ const dir=tmpDir();let now=new Date(2026,9,30,14).getTime();
+ fs.writeFileSync(path.join(dir,'activity-usage.json'),JSON.stringify({version:1,days:Array.from({length:7},(_,n)=>day(noonDay(now,-n-1)))}));
+ const p=new InteractionProfile(dir,()=>false,()=>90,()=>now,()=>true,()=>60),before=p.activitySummary();
+ expect(p.activityContext()).toContain('OBSERVED PC ROUTINE');now+=11*60000;
+ expect(p.activityContext()).toContain('OBSERVED PC ROUTINE');expect(p.activitySummary()).toEqual(before);
+ p.activityDelivered('That handle is ridiculous.');now+=11*60000;expect(p.activityContext()).toContain('OBSERVED PC ROUTINE');
+ p.activityDelivered('An earlier break than usual.');now+=11*60000;expect(p.activityContext()).toBe('');
+ expect(p.activityContext('my routine')).toContain('OBSERVED PC ROUTINE');expect(p.activitySummary()).toEqual(before);
+});
