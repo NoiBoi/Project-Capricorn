@@ -53,3 +53,34 @@ it('gives an explicitly unrelated turn its own prompt focus without erasing the 
  for(let n=0;n<10;n++)f.say('aside'+n,'assistant','Separate'+n+' unrelated'+n+' object'+n,{speech:{kind:'generated-spontaneous'}});
  expect(f.d.context(new Set(),'An offline license for local designs is now offered.')).toContain('holding local designs');
 });
+it('lets an unanswered aside end engagement without erasing its interest, then reopens on a user turn',()=>{
+ const f=fixture();f.say('u','user','I am working on a curved bracket.');
+ f.say('a','assistant','That curved bracket wants to escape.',{speech:{kind:'generated-spontaneous'}});
+ expect(f.d.engagement()).toMatchObject({engaged:false,unansweredRemarks:1});
+ f.restart();expect(f.d.engagement()).toMatchObject({engaged:false,unansweredRemarks:1});
+ expect(f.d.context()).toContain('wants to escape');
+ f.say('u2','user','Escape where?');expect(f.d.engagement()).toMatchObject({engaged:true,unansweredRemarks:0});
+ f.say('a2','assistant','Somewhere with less paperwork.');expect(f.d.engagement().engaged).toBe(true);
+ f.advance(90001);expect(f.d.engagement().engaged).toBe(false);expect(f.d.context()).toContain('wants to escape');
+});
+it('projects source exclusions and revocation without leaking an unanswered private aside into engagement',()=>{
+ const f=fixture();f.say('u','user','Show me a mug.');
+ f.say('browser','assistant','That mug handle is ridiculous.',{contextSources:['chrome'],speech:{kind:'generated-spontaneous'}});
+ expect(f.d.engagement().unansweredRemarks).toBe(1);
+ expect(f.d.engagement(new Set(['chrome'])).unansweredRemarks).toBe(0);
+ f.d.invalidateContext('chrome');expect(f.d.engagement().unansweredRemarks).toBe(0);
+ f.say('private','assistant','Another aside.',{private:true,speech:{kind:'generated-spontaneous'}});
+ expect(f.d.engagement().unansweredRemarks).toBe(0);
+});
+it('closes a recent exchange without deleting the expressed view',()=>{
+ const f=fixture();f.say('u','user','Pick a bracket.');f.say('a','assistant','I prefer the curved bracket.');
+ expect(f.d.engagement().engaged).toBe(true);
+ f.say('close','user','That settles it.');expect(f.d.engagement().engaged).toBe(false);
+ expect(f.d.context()).toContain('curved bracket');
+});
+it('treats a plain sign-off as disengagement while an engaged follow-up still counts',()=>{
+ const f=fixture();f.say('u','user','What about the curved bracket?');f.say('a','assistant','I prefer the curved bracket.');
+ f.say('occupied','user','I need to focus.');expect(f.d.engagement().engaged).toBe(false);
+ expect(f.d.context()).toContain('curved bracket');
+ f.say('followup','user','Thanks, but why the curved one?');expect(f.d.engagement().engaged).toBe(true);
+});

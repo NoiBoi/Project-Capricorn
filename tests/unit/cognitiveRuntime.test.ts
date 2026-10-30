@@ -198,3 +198,13 @@ describe('authoritative cognitive event sequences, real SQLite and XState',()=>{
     expect(f.runtime.admitDialogue('placed_window','placed_window',false,'new-window:3')).toBe(true);
   });
 });
+
+it('does not use an unanswered aside to admit contact elaboration or block important opportunities',()=>{
+ const f=fixture();
+ f.runtime.observeMessage({id:'u',role:'user',content:'I am working on the curved bracket.',ts:f.at});f.advance(1);
+ f.runtime.observeMessage({id:'a',role:'assistant',content:'That curved bracket wants to escape.',ts:f.at,meta:{speech:{kind:'generated-spontaneous'}}});
+ expect(f.runtime.dialogueEngaged()).toBe(false);expect(f.runtime.admitDialogue('pat')).toBe(false);
+ expect(f.runtime.admitDialogue('pat','pat',false,'new-material')).toBe(true);
+ f.runtime.offer({...f.opportunity('reminder'),event:'personal_followup',important:true});
+ expect(f.runtime.decide()?.opportunity.id).toBe('reminder');
+});

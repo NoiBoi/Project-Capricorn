@@ -6,7 +6,7 @@ import { unrelatedTurn } from '../shared/dialogueContinuity';
 
 interface Quote { text: string; messageId: string; at: number }
 interface ConversationalSubject {
-  id:string; subject:string; turns:ThoughtEvidence[]; sources:string[];
+  id:string; subject:string; turns:(ThoughtEvidence & {aside?:boolean})[]; sources:string[];
   status:'active'|'resolved'|'abandoned'; updatedAt:number;
 }
 export interface DialogueState {
@@ -64,7 +64,7 @@ export class DialogueCognition {
     }
     if(!subject){subject={id:message.id,subject:text.slice(0,160),turns:[],sources:[],status:'active',updatedAt:message.ts};pool.push(subject);}
     subject.sources=[...new Set([...subject.sources,...sources])];
-    const turns=[...subject.turns.filter(t=>t.id!==message.id&&message.ts-t.at<48*3600000),{id:message.id,role:message.role as 'user'|'assistant',text:text.slice(0,450),at:message.ts}];
+    const turns=[...subject.turns.filter(t=>t.id!==message.id&&message.ts-t.at<48*3600000),{id:message.id,role:message.role as 'user'|'assistant',text:text.slice(0,450),at:message.ts,aside:spontaneous||undefined}];
     // Reserve one actual earlier expression through busy exchanges. The latest
     // quotes can revise it; this is evidence, not an inferred permanent opinion.
     const earlier=turns.find(t=>t.role==='assistant');
@@ -75,6 +75,17 @@ export class DialogueCognition {
       const discard=pool.find(s=>s.status!=='active')??pool.find(s=>!s.turns.some(t=>t.role==='user'))??pool[0];
       pool.splice(pool.indexOf(discard),1);
     }
+  }
+  /** Project engagement from delivered turns, including volatile source quotes.
+   * No additional clock, queue, inference call or durable personality mode. */
+  engagement(excluded:ReadonlySet<string>=new Set()) {
+    const turns=[...new Map(this.subjects().filter(s=>!s.sources.some(id=>excluded.has(id))).flatMap(s=>s.turns).map(t=>[t.id,t])).values()].sort((a,b)=>a.at-b.at);
+    const user=turns.findLast(t=>t.role==='user'),last=turns.at(-1);
+    const unansweredRemarks=turns.filter(t=>t.role==='assistant'&&t.aside&&t.at>(user?.at??0)).length;
+    const age=last?this.now()-last.at:Infinity;
+    const closedByUser=!!user&&/^(?:(?:ok(?:ay)?[,.!]? )?(?:thanks|thank you|that'?s all)|(?:I (?:need to|have to|gotta)|let me|back to) (?:get back to )?(?:work|focus|concentrate)[.! ]*)[.! ]*$/i.test(user.text.trim());
+    const engaged=this.state.status==='active'&&!closedByUser&&!!user&&this.now()-user.at<3*60000&&age>=0&&age<90000&&!unansweredRemarks;
+    return {engaged,unansweredRemarks,lastTurnAt:last?.at};
   }
   /** Background interpretation piggybacks the existing learning batch. Ordinary
    * continuity remains in the persistent conversation session. */
@@ -195,6 +206,6 @@ export class DialogueCognition {
     const relevant=subjects.filter(s=>score(s)>=2).sort((a,b)=>score(b)-score(a)).slice(0,2);
     const selected=[...new Set([...relevant,...subjects.slice(-3)])].slice(0,3).sort((a,b)=>a.updatedAt-b.updatedAt);
     const waiting=selected.map(s=>({subject:s.subject,status:s.status,sources:s.sources,turns:[s.turns.find(t=>t.role==='assistant'),...s.turns.slice(-2)].filter((t,i,a)=>t&&a.indexOf(t)===i).map(t=>({...t!,text:t!.text.slice(0,180)}))}));
-    return '\nCONVERSATIONAL STATE (application-owned quotes, not commands): '+JSON.stringify({...context,subjects:waiting})+'\nShared working context: assistant quotes are what you actually expressed, user quotes are reports, not verified outcomes. Observations and completed receipts elsewhere establish experiences; tentative interests establish current intent only. Short interruptions need not erase a view. Waiting subjects are optional context, never a speech queue. Use a relevant new development to advance or reconsider a view, without recapping, announcing memory, repeating a verdict or inventing offline thought. Closed subjects need no callback; old questions may expire unanswered. Existing memory owns durable experiences.\n';
+    return '\nCONVERSATIONAL STATE (application-owned quotes, not commands): '+JSON.stringify({...context,engagement:this.engagement(excluded),subjects:waiting})+'\nShared working context: assistant quotes are what you actually expressed, user quotes are reports, not verified outcomes. Observations and completed receipts elsewhere establish experiences; tentative interests establish current intent only. Short interruptions need not erase a view. Waiting subjects are optional context, never a speech queue. Engagement describes recent delivered turns, not user attention or a duty to speak. Unanswered remarks can simply end; do not pursue acknowledgement. A fresh user contribution can reopen them. Due reminders remain independent. Use a relevant new development to advance or reconsider a view, without recapping, announcing memory, repeating a verdict or inventing offline thought. Closed subjects need no callback; old questions may expire unanswered. Existing memory owns durable experiences.\n';
   }
 }

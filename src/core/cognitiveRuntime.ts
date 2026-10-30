@@ -77,7 +77,7 @@ export class CognitiveRuntime {
     }
     return true;
   }
-  dialogueEngaged() { const s=this.dialogue.snapshot(); return s.status==='active' && !!s.subject && this.now()-(s.evidence?.findLast(e=>e.role==='user')?.at??0)<10*60000; }
+  dialogueEngaged() { return this.dialogue.engagement().engaged; }
   executionRevision() { return this.generation; }
   continuationValid(generation: number) { return generation===this.generation&&!this.owner&&!this.pending; }
   nestedReasoningAllowed() { return !!this.owner && ['window-tour','cursor-visit','return','local-move'].includes(this.owner); }
