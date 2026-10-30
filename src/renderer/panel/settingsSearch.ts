@@ -100,6 +100,7 @@ export const SETTINGS_SEARCH: SearchItem[] = [
   {"page": "privacy", "label": "What Capri may do", "detail": "Access & privacy"},
   {"page": "privacy", "label": "Approved apps", "detail": "Access & privacy"},
   {"page": "privacy", "label": "Search folders", "detail": "Access & privacy"},
+  {"page":"privacy","label":"Activity awareness","detail":"Optional local computer routine, idle time, noon-to-noon days, retention and clear history"},
   {"page": "privacy", "label": "Your data", "detail": "Access & privacy"},
   {"page": "privacy", "label": "Log level", "detail": "Access & privacy"},
   {"page": "system", "label": "Developer tools", "detail": "App & shortcuts"},

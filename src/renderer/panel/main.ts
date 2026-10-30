@@ -701,7 +701,7 @@ const TOOL_INFO: Record<ToolName, string> = {
   read_screen: 'Read your screen', study_timer: 'Study timers', mischief: 'Pranks on request', use_computer: 'Use your computer',
 };
 async function renderPrivacy() {
-  const d = await api.invoke('diagnostics:get');
+  const [d,activity] = await Promise.all([api.invoke('diagnostics:get'),api.invoke('activity:summary')]);
   const sc = h('div', { class: 'scroll' });
   const pol = (t: ToolName) => select(`actions.policies.${t}`, TOOL_INFO[t], [['allow', 'Allow'], ['confirm', 'Ask first'], ['deny', 'Never']]);
   sc.append(
@@ -722,6 +722,12 @@ async function renderPrivacy() {
         const f = await api.invoke('folders:pick');
         if (f && !S.actions.searchRoots.includes(f)) { await save('actions.searchRoots', [...S.actions.searchRoots, f]); go('privacy'); }
       }, '', 'folder'))),
+    group('Activity awareness',
+      sw('Remember computer activity patterns', 'privacy.activityAwareness.enabled'),
+      h('p', {class:'hint'}, 'Local activity times and durations only, collected while Capri runs. No app names, window titles, browsing content or keystrokes. Days run noon to noon. Idle time never proves sleep. Requires memory, saved history and local context. Turning this off deletes the timing record. Only a compact, relevant summary can accompany an existing model request.'),
+      field('Keep activity for',select('privacy.activityAwareness.retentionDays','Activity retention',[['30','30 days'],['60','60 days']],undefined,Number)),
+      h('p',{class:'hint',role:'status'}, activity.enabled ? activity.daysObserved+' days with observed activity. Habits need several adequately observed days.' : 'Activity collection is off.'),
+      btn('Clear activity history',async()=>{await api.invoke('activity:clear');toast('Activity history cleared.');go('privacy');},'quiet')),
     group('Your data',
       h('dl', { class: 'kv' },
         h('dt', {}, 'Location'), h('dd', { class: 'mono' }, d.userData),

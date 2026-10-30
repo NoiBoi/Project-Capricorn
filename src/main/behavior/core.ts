@@ -137,6 +137,7 @@ export class BehaviorCore {
     if (d.persistent?.() !== false) {
       const parsed = StateSchema.safeParse(d.cognition.restoredReasoning() ?? readJson(this.file, null).value);
       if (parsed.success) { this.state = parsed.data;this.save();fs.rmSync(this.file,{force:true}); }
+      else this.state=fresh(); // A privacy-clear checkpoint is a tombstone, not reasoning state.
     } else this.clear();
     this.prune();
   }

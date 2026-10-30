@@ -195,6 +195,8 @@ export interface InvokeMap {
   'memory:clear': [void, void];
   'memory:patterns': [void, import('./interactionProfile').InteractionProfileSummary];
   'memory:clearPatterns': [void, void];
+  'activity:summary': [void, import('./activityPatterns').ActivitySummary];
+  'activity:clear': [void, void];
   'personal:get': [void, import('./personalContext').PersonalContextView];
   'honcho:status': [void, import('../main/ai/honchoMemory').HonchoStatus];
   'honcho:sync': [void, import('../main/ai/honchoMemory').HonchoStatus];
@@ -275,7 +277,7 @@ export const INVOKE_CHANNELS: InvokeChannel[] = [
   'theatre:ready', 'theatre:done', 'intro:done', 'taskbar:command', 'taskbar:mode',
   'settings:get', 'settings:set', 'settings:reset', 'settings:capabilities', 'secrets:status', 'secrets:set', 'secrets:delete',
   'chat:send', 'chat:stop', 'chat:state', 'chat:history', 'chat:clear', 'memory:list', 'memory:add', 'memory:approve',
-  'memory:undo', 'memory:update', 'memory:delete', 'memory:clear', 'memory:patterns', 'memory:clearPatterns', 'notes:list', 'notes:delete', 'reminders:list', 'reminders:cancel',
+  'memory:undo', 'memory:update', 'memory:delete', 'memory:clear', 'memory:patterns', 'memory:clearPatterns', 'activity:summary', 'activity:clear', 'notes:list', 'notes:delete', 'reminders:list', 'reminders:cancel',
   'relationship:get', 'relationship:taste', 'relationship:thread', 'relationship:status', 'relationship:remove', 'dialogue:retire', 'dialogue:restore', 'dialogue:feedback',
   'dialogue:scene', 'dialogue:clearScene',
   'personal:get', 'personal:manage', 'personal:clear',
