@@ -1,0 +1,105 @@
+{
+  "scope": "Illustrative fixed local recall cases, not a general semantic benchmark. Both functions are real implementation code.",
+  "baselineCommit": "9b88880",
+  "baselineCorrect": 2,
+  "currentCorrect": 5,
+  "total": 6,
+  "results": [
+    {
+      "name": "Indirect graph reference",
+      "query": "Remember the node spaghetti?",
+      "user": "I opened a wiring patch with branching connections.",
+      "reply": "I wanted to understand the signal routes.",
+      "expected": true,
+      "baseline": [],
+      "current": [
+        {
+          "at": "2027-01-15T08:00:00.000Z",
+          "user": "I opened a wiring patch with branching connections.",
+          "capri": "I wanted to understand the signal routes."
+        }
+      ],
+      "baselineMatchesExpectation": false,
+      "currentMatchesExpectation": true
+    },
+    {
+      "name": "Color paraphrase",
+      "query": "Which hue did you favor?",
+      "user": "I am comparing green and purple swatches.",
+      "reply": "I prefer the vivid purple.",
+      "expected": true,
+      "baseline": [],
+      "current": [
+        {
+          "at": "2027-01-15T08:00:00.000Z",
+          "user": "I am comparing green and purple swatches.",
+          "capri": "I prefer the vivid purple."
+        }
+      ],
+      "baselineMatchesExpectation": false,
+      "currentMatchesExpectation": true
+    },
+    {
+      "name": "Music paraphrase",
+      "query": "That melody you enjoyed?",
+      "user": "I played a song yesterday.",
+      "reply": "I prefer rough guitars.",
+      "expected": true,
+      "baseline": [],
+      "current": [
+        {
+          "at": "2027-01-15T08:00:00.000Z",
+          "user": "I played a song yesterday.",
+          "capri": "I prefer rough guitars."
+        }
+      ],
+      "baselineMatchesExpectation": false,
+      "currentMatchesExpectation": true
+    },
+    {
+      "name": "Exact project reference",
+      "query": "The ceramic fox glaze?",
+      "user": "I am building a ceramic fox and testing cobalt glaze.",
+      "reply": "I like the blue glaze.",
+      "expected": true,
+      "baseline": [
+        {
+          "at": "2027-01-15T08:00:00.000Z",
+          "user": "I am building a ceramic fox and testing cobalt glaze.",
+          "capri": "I like the blue glaze."
+        }
+      ],
+      "current": [
+        {
+          "at": "2027-01-15T08:00:00.000Z",
+          "user": "I am building a ceramic fox and testing cobalt glaze.",
+          "capri": "I like the blue glaze."
+        }
+      ],
+      "baselineMatchesExpectation": true,
+      "currentMatchesExpectation": true
+    },
+    {
+      "name": "Unrelated question",
+      "query": "How high was the boiler pressure?",
+      "user": "I opened a wiring patch with branching connections.",
+      "reply": "Those routes looked interesting.",
+      "expected": false,
+      "baseline": [],
+      "current": [],
+      "baselineMatchesExpectation": true,
+      "currentMatchesExpectation": true
+    },
+    {
+      "name": "Uncovered paraphrase",
+      "query": "The sculpting sandbox from earlier?",
+      "user": "I opened Blender to inspect a mesh viewport.",
+      "reply": "I wanted to understand that geometry.",
+      "expected": true,
+      "baseline": [],
+      "current": [],
+      "baselineMatchesExpectation": false,
+      "currentMatchesExpectation": false
+    }
+  ]
+}

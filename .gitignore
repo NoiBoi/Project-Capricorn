@@ -1,0 +1,26 @@
+node_modules/
+dist/
+release/
+release-staged*/
+docs/previews/
+*.log
+.env.local
+.env*.local
+trailer/out/
+trailer/.remotion/
+*.tmp
+
+# raw desktop recordings (scripts/record-demo.mjs): personal desktop, regenerate locally
+trailer/public/demo/
+trailer/public/clips/
+trailer/public/audio/
+
+# Local profiles, credentials and generated output
+work/
+outputs/
+package-*/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.env
+secrets.bin*

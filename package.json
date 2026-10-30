@@ -1,0 +1,119 @@
+{
+  "name": "capri-buddy",
+  "version": "1.4.1",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:prod": "node scripts/build.mjs --prod",
+    "start": "node scripts/build.mjs && electron .",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run tests/unit",
+    "test:e2e": "node scripts/build.mjs && vitest run tests/e2e --no-file-parallelism --testTimeout=60000 --hookTimeout=60000",
+    "icons": "node scripts/build.mjs && node scripts/make-icons.mjs",
+    "dist": "node scripts/dist.mjs",
+    "verify:package": "node scripts/verify-package.mjs",
+    "behavior:replay": "node scripts/behavior-stage0.mjs",
+    "continuity:recall": "node scripts/continuity-recall.mjs",
+    "context:replay": "node scripts/personal-context-replay.mjs",
+    "context:honcho:check": "node scripts/verify-honcho-comparison.mjs",
+    "test:cognitive": "vitest run tests/unit/cognitiveRuntime.test.ts"
+  },
+  "author": "Capri Companion contributors",
+  "license": "MIT",
+  "description": "Private Capri companion with lachydotmcg artwork",
+  "dependencies": {
+    "@fontsource/chakra-petch": "^5.3.0",
+    "@fontsource/jetbrains-mono": "^5.3.0",
+    "@google/genai": "^2.31.0",
+    "@honcho-ai/sdk": "2.7.0",
+    "koffi": "^3.3.4",
+    "xstate": "5.33.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "electron": "^45.0.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.64.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5",
+    "zod": "^4.6.7"
+  },
+  "productName": "Capri Buddy",
+  "private": true,
+  "build": {
+    "appId": "dev.capri.buddy",
+    "productName": "Capri Buddy",
+    "copyright": "Unofficial fan project. Not affiliated with CD PROJEKT, Studio Trigger or Netflix.",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "!dist/**/*.map",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/koffi/**",
+      "node_modules/@koromix/**"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icon.ico",
+        "to": "icon.ico"
+      },
+      {
+        "from": "THIRD_PARTY_LICENSES.md",
+        "to": "THIRD_PARTY_LICENSES.md"
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      },
+      {
+        "from": "node_modules/@koromix/koffi-win32-x64/win32_x64",
+        "to": "koffi/win32_x64",
+        "filter": [
+          "*.node"
+        ]
+      },
+      {
+        "from": "extensions/chrome",
+        "to": "extensions/chrome"
+      },
+      {
+        "from": "docs/integrations",
+        "to": "integrations"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "legalTrademarks": "Unofficial fan project",
+      "signExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Capri Buddy",
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "Capri-Setup-${version}.exe"
+    }
+  }
+}

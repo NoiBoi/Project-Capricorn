@@ -1,0 +1,192 @@
+{
+  "model": "gpt-6-luna",
+  "calls": 6,
+  "scope": "At most six calls, synthetic visual descriptions; adapted generated-remark baseline, not full Electron execution",
+  "results": [
+    {
+      "lane": "baseline",
+      "event": "inspect",
+      "raw": "Take your time. The muted green and vivid violet are a pretty sharp contrast.",
+      "accepted": "Take your time. The muted green and vivid violet are a pretty sharp contrast.",
+      "inputCharacters": 3470,
+      "elapsedMs": 4094
+    },
+    {
+      "lane": "prototype-raw",
+      "inputCharacters": 3648,
+      "raw": "{\"interpretation\":\"They’re comparing colors and asked for a moment, so I’ll give them space.\",\"interest\":null,\"action\":\"defer\",\"line\":\"\",\"gesture\":\"none\",\"reason\":\"Respect their request to wait rather than interrupt.\"}",
+      "elapsedMs": 3576
+    },
+    {
+      "lane": "prototype",
+      "event": "observe",
+      "decision": {
+        "interpretation": "They’re comparing colors and asked for a moment, so I’ll give them space.",
+        "interest": null,
+        "action": "defer",
+        "line": "",
+        "gesture": "none",
+        "reason": "Respect their request to wait rather than interrupt.",
+        "delivered": false
+      },
+      "interests": []
+    },
+    {
+      "lane": "baseline",
+      "event": "pat",
+      "raw": "<quiet/>",
+      "accepted": "",
+      "inputCharacters": 4014,
+      "elapsedMs": 3961
+    },
+    {
+      "lane": "prototype-raw",
+      "inputCharacters": 3841,
+      "raw": "{\"interpretation\":\"They’re still comparing colors, and the pat is a small affectionate interruption.\",\"interest\":null,\"action\":\"gesture\",\"line\":\"\",\"gesture\":\"nod\",\"reason\":\"Acknowledge the pat without interrupting their moment.\"}",
+      "elapsedMs": 3189
+    },
+    {
+      "lane": "prototype-expression",
+      "expression": {
+        "action": "gesture",
+        "line": "",
+        "gesture": "nod"
+      }
+    },
+    {
+      "lane": "prototype",
+      "event": "pat",
+      "decision": {
+        "interpretation": "They’re still comparing colors, and the pat is a small affectionate interruption.",
+        "interest": null,
+        "action": "gesture",
+        "line": "",
+        "gesture": "nod",
+        "reason": "Acknowledge the pat without interrupting their moment.",
+        "delivered": true
+      },
+      "interests": []
+    },
+    {
+      "lane": "baseline",
+      "event": "invitation",
+      "raw": "I’d pick the muted green. It feels calmer and more livable; the violet’s striking, but a little loud for my taste.",
+      "accepted": "I’d pick the muted green. It feels calmer and more livable; the violet’s striking, but a little loud for my taste.",
+      "inputCharacters": 4301,
+      "elapsedMs": 3971
+    },
+    {
+      "lane": "prototype-raw",
+      "inputCharacters": 4025,
+      "raw": "{\"interpretation\":\"They’re asking for my preference between the two swatches.\",\"interest\":null,\"action\":\"speak\",\"line\":\"Muted green. It feels calmer and more lived-in; that vivid violet is a bit loud for my taste.\",\"gesture\":\"none\",\"reason\":\"A direct preference question invites a brief, grounded choice.\"}",
+      "elapsedMs": 3607
+    },
+    {
+      "lane": "prototype-expression",
+      "expression": {
+        "action": "speak",
+        "line": "Muted green. It feels calmer and more lived-in; that vivid violet is a bit loud for my taste.",
+        "gesture": "none"
+      }
+    },
+    {
+      "lane": "prototype",
+      "event": "invitation",
+      "decision": {
+        "interpretation": "They’re asking for my preference between the two swatches.",
+        "interest": null,
+        "action": "speak",
+        "line": "Muted green. It feels calmer and more lived-in; that vivid violet is a bit loud for my taste.",
+        "gesture": "none",
+        "reason": "A direct preference question invites a brief, grounded choice.",
+        "delivered": true
+      }
+    }
+  ],
+  "diagnostics": [
+    {
+      "purpose": "ambient",
+      "model": "gpt-6-luna",
+      "inputCharacters": 4102,
+      "elapsedMs": 4069,
+      "usage": {
+        "input_tokens": 4688,
+        "cached_input_tokens": 2048,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 20,
+        "reasoning_output_tokens": 0
+      },
+      "ok": true
+    },
+    {
+      "purpose": "ambient",
+      "model": "gpt-6-luna",
+      "inputCharacters": 4280,
+      "elapsedMs": 3558,
+      "usage": {
+        "input_tokens": 4737,
+        "cached_input_tokens": 2048,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 52,
+        "reasoning_output_tokens": 0
+      },
+      "ok": true
+    },
+    {
+      "purpose": "ambient",
+      "model": "gpt-6-luna",
+      "inputCharacters": 4646,
+      "elapsedMs": 3948,
+      "usage": {
+        "input_tokens": 4836,
+        "cached_input_tokens": 2048,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 7,
+        "reasoning_output_tokens": 0
+      },
+      "ok": true
+    },
+    {
+      "purpose": "reply",
+      "model": "gpt-6-luna",
+      "inputCharacters": 4473,
+      "elapsedMs": 3169,
+      "usage": {
+        "input_tokens": 4789,
+        "cached_input_tokens": 2048,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 51,
+        "reasoning_output_tokens": 0
+      },
+      "ok": true
+    },
+    {
+      "purpose": "ambient",
+      "model": "gpt-6-luna",
+      "inputCharacters": 4933,
+      "elapsedMs": 3946,
+      "usage": {
+        "input_tokens": 4917,
+        "cached_input_tokens": 2048,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 32,
+        "reasoning_output_tokens": 0
+      },
+      "ok": true
+    },
+    {
+      "purpose": "reply",
+      "model": "gpt-6-luna",
+      "inputCharacters": 4657,
+      "elapsedMs": 3588,
+      "usage": {
+        "input_tokens": 4844,
+        "cached_input_tokens": 2048,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 71,
+        "reasoning_output_tokens": 0
+      },
+      "ok": true
+    }
+  ]
+}

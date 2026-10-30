@@ -1,0 +1,11 @@
+import fs from 'node:fs';import path from 'node:path';import {createHash} from 'node:crypto';import {extractFile,listPackage} from '@electron/asar';
+const root=path.resolve(import.meta.dirname,'..'), stage=path.join(root,'release-staged','win-unpacked'), asar=path.join(stage,'resources','app.asar');
+const sha=b=>createHash('sha256').update(b).digest('hex'), checks=[];
+const add=(name,ok,detail)=>checks.push({name,ok,detail});
+const pkg=JSON.parse(extractFile(asar,'package.json').toString());add('staged app version',pkg.version===JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version,pkg.version);
+for(const file of ['main/index.js','preload/preload.js','renderer/panel.js'])add('asar matches built '+file,sha(extractFile(asar,path.join('dist',...file.split('/'))))===sha(fs.readFileSync(path.join(root,'dist',file))));
+for(const file of ['manifest.json','capture.js','observe.js','worker.js','popup.js','popup.html'])add('extension resource matches '+file,sha(fs.readFileSync(path.join(root,'extensions/chrome',file)))===sha(fs.readFileSync(path.join(stage,'resources/extensions/chrome',file))));
+add('native Koffi packaged',fs.existsSync(path.join(stage,'resources/koffi/win32_x64/koffi.node')));
+const files=listPackage(asar);add('no profile/environment files in asar',!files.some(f=>/(?:^|[/\\])(?:\.env(?:\..*)?|secrets\.bin|settings\.json|history\.jsonl|memory\.json)$/.test(f)));
+const envFile=path.join(root,'.env.local');const key=process.env.GEMINI_API_KEY||(fs.existsSync(envFile)?/GEMINI_API_KEY=(.+)/.exec(fs.readFileSync(envFile,'utf8'))?.[1]?.trim():'');if(key)add('no development key bytes in asar',!fs.readFileSync(asar).includes(Buffer.from(key)));
+const report={date:new Date().toISOString(),version:pkg.version,checks,ok:checks.every(c=>c.ok)};fs.writeFileSync(path.join(root,'docs/integrations/package-layout.json'),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));if(!report.ok)process.exitCode=1;

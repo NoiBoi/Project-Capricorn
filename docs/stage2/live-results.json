@@ -1,0 +1,191 @@
+{
+  "model": "gpt-6-luna",
+  "scope": "Three generation opportunities; a selected actual delivered opinion was promoted locally using its exact quote. This checks recall, not spontaneous episode selection.",
+  "first": {
+    "line": "Vivid violet. It’ll give the study a stronger pulse, especially if you let the muted green sit beside it as a quiet counterpoint.",
+    "episodes": [
+      {
+        "id": "episodemvr9tyh14ms9px",
+        "topic": "Color preference",
+        "sources": [
+          {
+            "id": "amvr9tv3u234aa8",
+            "at": 1793140963507,
+            "role": "assistant",
+            "text": "Vivid violet. It’ll give the study a stronger pulse, especially if you let the muted green sit beside it as a quiet counterpoint.",
+            "reliability": "delivered"
+          }
+        ],
+        "tags": [
+          "palette",
+          "hue"
+        ],
+        "readings": [
+          {
+            "text": "Capri expressed this color preference.",
+            "sourceId": "amvr9tv3u234aa8",
+            "at": 1793140963507
+          }
+        ],
+        "question": "",
+        "updatedAt": 1793140963507,
+        "status": "current"
+      }
+    ]
+  },
+  "later": {
+    "before": {
+      "version": 1,
+      "entries": [
+        {
+          "id": "umvr9tv3k1q1of0",
+          "role": "user",
+          "text": "I am comparing muted green and vivid violet. Which do you prefer for a small color study?",
+          "at": 1793140959152,
+          "event": "chat"
+        },
+        {
+          "id": "amvr9tv3u234aa8",
+          "role": "assistant",
+          "text": "Vivid violet. It’ll give the study a stronger pulse, especially if you let the muted green sit beside it as a quiet counterpoint.",
+          "at": 1793140963507,
+          "event": "chat"
+        },
+        {
+          "id": "umvr9tyww1teiiv",
+          "role": "user",
+          "text": "Which hue did you side with earlier, and why?",
+          "at": 1793140964096,
+          "event": "chat"
+        },
+        {
+          "id": "amvr9tyx623qsz4",
+          "role": "assistant",
+          "text": "Vivid violet. I liked the stronger pulse it gives the study, with muted green as a quieter counterpoint.",
+          "at": 1793140967258,
+          "event": "chat"
+        }
+      ],
+      "revision": 4
+    },
+    "after": {
+      "version": 1,
+      "entries": [
+        {
+          "id": "umvr9tv3k1q1of0",
+          "role": "user",
+          "text": "I am comparing muted green and vivid violet. Which do you prefer for a small color study?",
+          "at": 1793140959152,
+          "event": "chat"
+        },
+        {
+          "id": "amvr9tv3u234aa8",
+          "role": "assistant",
+          "text": "Vivid violet. It’ll give the study a stronger pulse, especially if you let the muted green sit beside it as a quiet counterpoint.",
+          "at": 1793140963507,
+          "event": "chat"
+        },
+        {
+          "id": "umvr9tyww1teiiv",
+          "role": "user",
+          "text": "Which hue did you side with earlier, and why?",
+          "at": 1793140964096,
+          "event": "chat"
+        },
+        {
+          "id": "amvr9tyx623qsz4",
+          "role": "assistant",
+          "text": "Vivid violet. I liked the stronger pulse it gives the study, with muted green as a quieter counterpoint.",
+          "at": 1793140967258,
+          "event": "chat"
+        }
+      ],
+      "revision": 4
+    },
+    "episodes": [
+      {
+        "id": "episodemvr9tyh14ms9px",
+        "topic": "Color preference",
+        "sources": [
+          {
+            "id": "amvr9tv3u234aa8",
+            "at": 1793140963507,
+            "role": "assistant",
+            "text": "Vivid violet. It’ll give the study a stronger pulse, especially if you let the muted green sit beside it as a quiet counterpoint.",
+            "reliability": "delivered"
+          }
+        ],
+        "tags": [
+          "palette",
+          "hue"
+        ],
+        "readings": [
+          {
+            "text": "Capri expressed this color preference.",
+            "sourceId": "amvr9tv3u234aa8",
+            "at": 1793140963507
+          }
+        ],
+        "question": "",
+        "updatedAt": 1793140963507,
+        "status": "current"
+      }
+    ],
+    "outcome": "pat: gesture (Acknowledge the pat without restarting the conversation.)"
+  },
+  "isolatedRecall": {
+    "scope": "One additional generation; no earlier chat/history supplied, only a captured public episodic opinion.",
+    "result": {
+      "historyTurns": 0,
+      "exchange": {
+        "version": 1,
+        "entries": [
+          {
+            "id": "umvra0a5d2ysabu",
+            "role": "user",
+            "text": "Which hue were you leaning toward last time?",
+            "at": 1793141258593,
+            "event": "chat"
+          },
+          {
+            "id": "amvra0a5s3dorlu",
+            "role": "assistant",
+            "text": "Vivid violet. I was picturing it against muted green, so the violet could really pop.",
+            "at": 1793141262292,
+            "event": "chat"
+          }
+        ],
+        "revision": 3
+      },
+      "episodes": [
+        {
+          "id": "episodemvra0a5917oij7",
+          "topic": "Color preference",
+          "sources": [
+            {
+              "id": "amvr9tv3u234aa8",
+              "at": 1793140963507,
+              "role": "assistant",
+              "text": "Vivid violet. It’ll give the study a stronger pulse, especially if you let the muted green sit beside it as a quiet counterpoint.",
+              "reliability": "delivered"
+            }
+          ],
+          "tags": [
+            "palette",
+            "hue"
+          ],
+          "readings": [
+            {
+              "text": "Capri expressed this color preference.",
+              "sourceId": "amvr9tv3u234aa8",
+              "at": 1793140963507
+            }
+          ],
+          "question": "",
+          "updatedAt": 1793140963507,
+          "status": "current"
+        }
+      ]
+    }
+  }
+}

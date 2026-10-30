@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self' blob:; connect-src 'none'" />
+  <title>Capri</title>
+  <style>
+    html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; user-select: none; width: 100%; height: 100%; }
+    canvas { display: block; }
+    #drop-hint { position: absolute; height: 2px; background: #74ffe1; box-shadow: 0 0 8px #22d6bb; border-radius: 2px; pointer-events: none; }
+    #drop-hint::after { content: ''; position: absolute; left: 50%; top: -3px; width: 6px; height: 6px; border: 1px solid #bcfff0; border-radius: 50%; background: #143b35; }
+    #bubble {
+      position: absolute; left: 50%; top: 4px; transform: translateX(-50%) translateY(-6px); max-width: 86%;
+      font: 600 12px/1.35 "Segoe UI Variable", "Segoe UI", sans-serif; color: #eafff3; background: rgba(10,7,16,.92);
+      border: 1px solid #22f27a; padding: 6px 10px; clip-path: polygon(0 0, 100% 0, 100% 78%, 58% 78%, 50% 100%, 46% 78%, 0 78%);
+      padding-bottom: 14px; opacity: 0; transition: opacity .25s, transform .25s; pointer-events: none; text-align: center;
+    }
+    #bubble.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  </style>
+</head>
+<body>
+  <canvas id="stage"></canvas>
+  <div id="drop-hint" hidden aria-hidden="true"></div>
+  <div id="bubble" role="status" aria-live="polite"></div>
+  <script src="character.js"></script>
+</body>
+</html>

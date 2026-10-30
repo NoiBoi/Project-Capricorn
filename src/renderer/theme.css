@@ -1,0 +1,11 @@
+/* One palette and type scale for the controller, companion and transmissions. */
+:root {
+  --bg:#111017; --surface:#19161f; --raised:#231e2b; --line:#332b3d; --line-strong:#51425f;
+  --text:#f6f0fa; --muted:#b9adc6; --faint:#9c8eaa; --accent:#c493f4; --accent-hover:#d5b2fa;
+  --accent-ink:#21132d; --ok:#64e69a; --warn:#ebbd72; --err:#ff91ac; --focus:#c493f4;
+  --ui:"Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono",Consolas,monospace; --r:9px; color-scheme:dark;
+}
+::selection{background:#704c91;color:#fff}
+:focus-visible{outline:2px solid var(--focus);outline-offset:3px}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.001ms!important;transition-duration:.001ms!important}}

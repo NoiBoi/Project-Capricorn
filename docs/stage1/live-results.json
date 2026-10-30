@@ -1,0 +1,121 @@
+{
+  "model": "gpt-6-luna",
+  "scope": "Three generation opportunities, isolated Electron profile, synthetic user-described observation, TTS off",
+  "result": {
+    "first": {
+      "version": 1,
+      "entries": [
+        {
+          "id": "umvr89usw1xryvx",
+          "role": "user",
+          "text": "I am comparing muted green and vivid violet. Which would you pick?",
+          "at": 1793138346032,
+          "event": "chat"
+        },
+        {
+          "id": "amvr89ut62km2cy",
+          "role": "assistant",
+          "text": "Vivid violet. Muted green is easy to live with, but violet has more nerve and will make the study feel deliberate.",
+          "at": 1793138349736,
+          "event": "chat"
+        }
+      ],
+      "revision": 2
+    },
+    "second": {
+      "version": 1,
+      "entries": [
+        {
+          "id": "umvr89usw1xryvx",
+          "role": "user",
+          "text": "I am comparing muted green and vivid violet. Which would you pick?",
+          "at": 1793138346032,
+          "event": "chat"
+        },
+        {
+          "id": "amvr89ut62km2cy",
+          "role": "assistant",
+          "text": "Vivid violet. Muted green is easy to live with, but violet has more nerve and will make the study feel deliberate.",
+          "at": 1793138349736,
+          "event": "chat"
+        },
+        {
+          "id": "scenemvr8a0im5s4a3h",
+          "role": "assistant",
+          "text": "Violet, then. It’ll give the study a stronger focal point without making the whole room feel loud.",
+          "at": 1793138353438,
+          "event": "desktop"
+        }
+      ],
+      "revision": 3
+    },
+    "final": {
+      "version": 1,
+      "entries": [
+        {
+          "id": "umvr89usw1xryvx",
+          "role": "user",
+          "text": "I am comparing muted green and vivid violet. Which would you pick?",
+          "at": 1793138346032,
+          "event": "chat"
+        },
+        {
+          "id": "amvr89ut62km2cy",
+          "role": "assistant",
+          "text": "Vivid violet. Muted green is easy to live with, but violet has more nerve and will make the study feel deliberate.",
+          "at": 1793138349736,
+          "event": "chat"
+        },
+        {
+          "id": "scenemvr8a0im5s4a3h",
+          "role": "assistant",
+          "text": "Violet, then. It’ll give the study a stronger focal point without making the whole room feel loud.",
+          "at": 1793138353438,
+          "event": "desktop"
+        },
+        {
+          "id": "umvr8a0it63gvsg",
+          "role": "user",
+          "text": "Actually, forget the colors. I want quiet company for a bit.",
+          "at": 1793138353445,
+          "event": "chat"
+        },
+        {
+          "id": "amvr8a0j379m8p2",
+          "role": "assistant",
+          "text": "Yeah. I’m here. We can just sit with the quiet.",
+          "at": 1793138356806,
+          "event": "chat"
+        }
+      ],
+      "revision": 5
+    },
+    "situation": {
+      "version": 1,
+      "facts": [
+        {
+          "id": "live-fixture",
+          "at": 1793138346027,
+          "target": "777",
+          "title": "Color study",
+          "process": "paint.exe",
+          "evidence": "user",
+          "detail": "The user says the two swatches are muted green and vivid violet."
+        },
+        {
+          "id": "foregroundmvr89viz3cw9fz",
+          "at": 1793138346971,
+          "target": "777",
+          "title": "Color study",
+          "process": "paint.exe",
+          "evidence": "metadata",
+          "detail": "Actual foreground window changed; contents are unknown."
+        }
+      ],
+      "interests": [],
+      "quiet": false,
+      "journal": []
+    },
+    "outcome": "pat: speak (Stay with the color choice already made; the pat doesn't call for a new topic.)"
+  }
+}

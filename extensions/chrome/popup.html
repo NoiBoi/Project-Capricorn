@@ -1,0 +1,9 @@
+<!doctype html><html lang="en"><meta charset="utf-8"><title>Capri page sharing</title>
+<style>body{width:340px;background:#15131b;color:#eee;font:14px system-ui;padding:14px}button,input{box-sizing:border-box;width:100%;padding:9px;margin:5px 0}button{background:#ec5269;border:0;color:#16131b;border-radius:5px}p{line-height:1.4}small{color:#c5bdcc}#status{white-space:pre-wrap}</style>
+<h2>Capri page sharing</h2><small id="id"></small>
+<label>Pairing token from Capri Connections<input id="token" type="password" autocomplete="off"></label><button id="pair">Save pairing</button>
+<p>Only allowed sites in the focused window are shared. Password, payment and sensitive pages are blocked. Capri must allow the same site.</p>
+<button id="allow">Allow this site</button><button id="remove">Stop sharing this site</button><div id="sites"></div>
+<button id="passive">Enable passive reading for this site</button><button id="stopPassive">Metadata only for this site</button><button id="deep">Read this document more deeply once</button>
+<button id="metadata">Share headings now</button><button id="selection">Share selected text once</button><button id="excerpt">Share article excerpt once</button>
+<small>Selected text and excerpts also require Content permission in Capri. Inputs and forms are excluded. Approved reading is bounded and stored locally when retention is enabled. No private browsing.</small><p id="status" role="status"></p><script src="popup.js" type="module"></script></html>
