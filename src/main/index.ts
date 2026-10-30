@@ -80,6 +80,7 @@ import { PersonalContext } from './store/personalContext';
 import { HonchoMemory } from './ai/honchoMemory';
 import { LifeService } from './life/service';
 import { Stage3Config, AcademicImport, accountIds } from '../shared/communications';
+import {LocationSetup,phoneConfig} from './life/locationSetup';
 import { LifeSource, LifeEntity, LifeSetupDraft, Stage2Config } from '../shared/lifeContext';
 import { lineRetirementRequest } from '../shared/relationship';
 import { ConversationScene } from './store/conversationScene';
@@ -2654,7 +2655,7 @@ let previousUserIdle = 0;
 let activities: ActivityDirector;
 function presenceTick() {
   if(agency){observeAgency();maintainAgency();agency.tick();}
-  life?.ledger.maintain();
+  life?.ledger.maintain();life?.stage2.maintain();
   company.pruneWindows(new Set(desktopWindows().map(w=>String(w.handle))));
   stayRestTick();
   sendSurface();
@@ -3218,6 +3219,18 @@ function registerIpc() {
   handle('life:googleAuth','panel',none,()=>life.stage2.authorize(url=>shell.openExternal(url)));
   handle('life:calendars','panel',none,()=>life.stage2.list());
   handle('life:sync','panel',z.enum(['calendar','lastfm']),id=>life.stage2.sync(id));
+  const locationSetup=new LocationSetup();
+  handle('life:locationPosition','panel',none,()=>{const s=life.stage2.receiver.history(),p=s.lastFix;if(!p||Date.now()-p.at>300000||!life.ledger.source('owntracks')?.permissions.collect||life.ledger.source('owntracks')?.paused)throw Error('Waiting for a fresh authorized phone position.');return{lat:p.lat,lon:p.lon};});
+  handle('life:locationSearch','panel',str(200),q=>life.stage2.receiver.geography.search(q));
+  handle('life:locationNetwork','panel',none,()=>locationSetup.inspect());
+  handle('life:locationServe','panel',str(64),async fingerprint=>{
+    const n=await locationSetup.inspect();if(locationSetup.fingerprint(n)!==fingerprint)throw Error('Routes changed; inspect again.');
+    const answer=await dialog.showMessageBox({type:'question',buttons:['Cancel','Enable private HTTPS route'],defaultId:0,cancelId:0,title:'Private OwnTracks connection',message:'Allow Tailscale Serve to forward private HTTPS port 8443 to the local OwnTracks receiver?',detail:'Existing routes are preserved. No public ports or Funnel are enabled. Your iPhone must use the same tailnet.'});
+    return answer.response===1?locationSetup.enable(fingerprint):n;
+  });
+  handle('life:locationExport','panel',none,async()=>{const n=await locationSetup.inspect();if(!n.url)throw Error(n.detail);const credential=secrets.get('owntracksBasic');if(!credential)throw Error('Generate the phone credential first.');return JSON.stringify(phoneConfig(n.url,life.stage2.config.device,credential),null,2);});
+  handle('life:locationEdit','panel',z.object({id:str(100),action:z.enum(['delete','rename','ignore']),name:str(150).optional()}).strict(),v=>life.stage2.receiver.edit(v.id,v.action,v.name));
+  handle('life:locationClear','panel',none,()=>{life.stage2.receiver.clearHistory();return true;});
   handle('life:locationKey','panel',none,()=>life.stage2.generate());
   handle('life:get', 'panel', none, () => life.ledger.view());
   handle('life:configure', 'panel', LifeSource, input => life.configure(input));

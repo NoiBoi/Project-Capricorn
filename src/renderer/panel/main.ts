@@ -1,3 +1,4 @@
+import {locationControls} from './location';
 import { searchBox, type SearchItem } from './search';
 import { SETTINGS_SEARCH } from './settingsSearch';
 import {authoredLineId} from '../../shared/dialogue';
@@ -1000,7 +1001,7 @@ async function renderConnections() {
       health?.lastFailure ? note('Last failure: '+new Date(health.lastFailure).toLocaleString()) : null,
       source.folder ? note('Selected folder: '+source.folder) : null,
       field('Display name',name),permission('collect','Collect observations'),permission('live','Use in live dialogue'),permission('proactive','Use in proactive remarks'),permission('retain','Retain source history locally'),permission('content','Allow bounded content access'),
-      (['calendar','lastfm','owntracks','academic'].includes(source.id)||/^(gmail|outlook|teams)-[01]$/.test(source.id)) ? permission('learn','Learn summarized observations in Honcho') : null,
+      (['calendar','lastfm','academic'].includes(source.id)||/^(gmail|outlook|teams)-[01]$/.test(source.id)) ? permission('learn','Learn summarized observations in Honcho') : null,
       source.kind==='chrome' ? field('Allowed site origins, one per line',sites,'Chrome must also grant each site. Sensitive pages remain blocked.',true) : null,
       field('Retention days',days,'1 to 30 days; current state still expires sooner.'),
       h('div',{class:'row'},
@@ -1018,15 +1019,6 @@ async function renderConnections() {
   const device=h('input',{type:'text','aria-label':'OwnTracks device name',value:integration.device,placeholder:'Your chosen OwnTracks device name'});
   const locationKey=h('input',{type:'text',readOnly:true,'aria-label':'OwnTracks generated credential'});
   const credentialNotice=h('p',{class:'hint',role:'status'});
-  const places=h('div',{'aria-label':'Named places'});
-  const renderPlaces=()=>{
-    places.replaceChildren(...integration.places.map(place=>{
-      const text=(key:'name'|'lat'|'lon'|'radius',label:string)=>field(label,h('input',{type:key==='name'?'text':'number','aria-label':place.id+': '+label,value:place[key],step:key==='lat'||key==='lon'?'any':1,oninput:(e:Event)=>{const v=(e.target as HTMLInputElement).value;if(key==='name')place.name=v;else place[key]=Number(v);}}));
-      return group(place.name||'New place',text('name','Place name'),text('lat','Latitude'),text('lon','Longitude'),text('radius','Radius in metres'),
-        ...state.entities.map(entity=>field('Associate '+entity.name,h('input',{type:'checkbox',checked:place.entities.includes(entity.id),onchange:(e:Event)=>{place.entities=place.entities.filter(id=>id!==entity.id);if((e.target as HTMLInputElement).checked)place.entities.push(entity.id);}}))),
-        btn('Remove '+(place.name||'place'),()=>{integration.places=integration.places.filter(p=>p.id!==place.id);renderPlaces();},'quiet'));
-    }));
-  };renderPlaces();
   const calendarChoices=stage.calendars.map(c=>field(c.name,h('input',{type:'checkbox','aria-label':'Monitor calendar '+c.name,checked:integration.calendars.includes(c.id),onchange:(e:Event)=>{integration.calendars=integration.calendars.filter(id=>id!==c.id);if((e.target as HTMLInputElement).checked)integration.calendars.push(c.id);}})));
   const integrations=group('Calendar, listening history and phone location',
     note('Setup alone does not enable collection. Save integration setup, then enable the corresponding source controls below. Learn requires retention, global automatic learning, and local Honcho. Pausing or changing a source clears its learned reading.'),
@@ -1039,7 +1031,7 @@ async function renderConnections() {
     btn('Sync Last.fm now',()=>run(()=>api.invoke('life:sync','lastfm')),'quiet'),
     note('OwnTracks: '+stage.receiver),field('OwnTracks device name',device),
     btn('Generate OwnTracks credential',async()=>{try{const result=await api.invoke('life:locationKey');locationKey.value=result.username+':'+result.password;credentialNotice.textContent='Copy username and password now. '+(result.persistent?'Stored using OS encryption.':'Session only: OS encryption unavailable.');}catch(e){toast(String(e),true);}},'quiet'),field('Generated username:password',locationKey),credentialNotice,
-    places,btn('Add named place',()=>{if(integration.places.length>=30){toast('At most 30 named places.',true);return;}integration.places.push({id:'place-'+Date.now(),name:'',lat:0,lon:0,radius:150,entities:[]});renderPlaces();},'quiet'),note('Coordinates stay local. Use a radius from 50 to 5000 metres. Save integration setup to apply additions or removals.'),
+    locationControls(api,stage,integration),
     btn('Save integration setup',()=>run(async()=>{integration.lastfmUser=user.value.trim();integration.device=device.value.trim();await api.invoke('life:stage2Setup',integration);})),
     note('Phone receiver: 127.0.0.1:43130/pub. Use private Tailscale Serve HTTPS. Never Funnel. Read resources/integrations/SETUP.md for exact account and phone setup. A listening receiver does not prove phone connectivity.'),
     ...stage.recentTracks.map(t=>note(new Date(t.at).toLocaleString()+' | '+t.artist+': '+t.title)),

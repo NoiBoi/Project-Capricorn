@@ -154,6 +154,13 @@ export interface InvokeMap {
   'life:googleAuth': [void,void];
   'life:calendars': [void,import('./lifeContext').Stage2View];
   'life:sync': [string,void];
+  'life:locationPosition': [void,{lat:number;lon:number}];
+  'life:locationSearch': [string,import('./location').PersonalPlace[]];
+  'life:locationNetwork': [void,import('./location').LocationNetwork];
+  'life:locationServe': [string,import('./location').LocationNetwork];
+  'life:locationExport': [void,string];
+  'life:locationEdit': [{id:string;action:'delete'|'rename'|'ignore';name?:string},import('./location').LocationView];
+  'life:locationClear': [void,boolean];
   'life:locationKey': [void,{username:string;password:string;persistent:boolean}];
   'life:get': [void, import('./lifeContext').LifeView];
   'life:configure': [import('./lifeContext').LifeSourceConfig, import('./lifeContext').LifeView];
@@ -270,7 +277,7 @@ export interface InvokeMap {
 }
 export type InvokeChannel = keyof InvokeMap;
 export const INVOKE_CHANNELS: InvokeChannel[] = [
-  'life:draft', 'life:stage3', 'life:stage3Setup', 'life:accountAuth', 'life:accountChoices', 'life:accountSync', 'life:botKey', 'life:academic', 'life:academicFile', 'life:exclude', 'life:forgetEntity', 'life:stage2', 'life:stage2Setup', 'life:stage2Key', 'life:googleAuth', 'life:calendars', 'life:sync', 'life:locationKey', 'life:get', 'life:configure', 'life:addProject', 'life:pair', 'life:forget', 'life:clear', 'life:associate', 'life:candidate', 'life:correct',
+  'life:draft', 'life:stage3', 'life:stage3Setup', 'life:accountAuth', 'life:accountChoices', 'life:accountSync', 'life:botKey', 'life:academic', 'life:academicFile', 'life:exclude', 'life:forgetEntity', 'life:stage2', 'life:stage2Setup', 'life:stage2Key', 'life:googleAuth', 'life:calendars', 'life:sync', 'life:locationKey', 'life:locationSearch', 'life:locationPosition', 'life:locationNetwork', 'life:locationServe', 'life:locationExport', 'life:locationEdit', 'life:locationClear', 'life:get', 'life:configure', 'life:addProject', 'life:pair', 'life:forget', 'life:clear', 'life:associate', 'life:candidate', 'life:correct',
   'dev:absence',
   'bubble:reply',
   'dev:get', 'dev:run', 'dev:stop',

@@ -40,6 +40,7 @@ export class LifeService {
     if(!old)throw Error('Use Add project folder to authorize a new source.');
     if(config.kind!==old.kind||config.folder!==old.folder)throw Error('Re-select folders through the folder picker.');
     config.sites=config.sites.map(site=>{const u=safePage(site);if(!u||new URL(site).origin!==site)throw Error('Use exact http(s) site origins, without paths.');return site;});
+    if(config.id==='owntracks'&&config.permissions.learn)throw Error('Phone location stays local; external location memory is disabled.');
     if(config.permissions.learn && !['calendar','lastfm','owntracks'].includes(config.id)&&!(/^(gmail|outlook|teams)-[01]$/.test(config.id)||config.id==='academic'))throw Error('This source does not support long-term source learning.');
     if(config.permissions.learn && (!config.permissions.collect||!config.permissions.retain))throw Error('Source learning requires collection and local retention.');
     if(['calendar','lastfm','owntracks'].includes(config.id)&&JSON.stringify(config)!==JSON.stringify(old))this.stage2.invalidate(config.id);
@@ -57,7 +58,7 @@ export class LifeService {
     void this.start();return this.ledger.view();
   }
   pair(extensionId: string) {if(!/^[a-p]{32}$/.test(extensionId))throw Error('Copy the 32-letter extension ID from chrome://extensions.');const token=randomBytes(32).toString('hex');this.secrets.set('lifeBridge',JSON.stringify({extensionId,token}));void this.start();return {token,port:43129,persistent:this.secrets.persistent};}
-  forget(id: string, remove=false) {if(this.stage3.has(id))this.stage3.invalidate(id,true);if(['calendar','lastfm','owntracks'].includes(id))this.stage2.invalidate(id,true);this.ledger.forget(id,remove);if(id==='chrome')this.secrets.delete('lifeBridge');void this.start();}
-  clear(){for(const id of this.ledger.view().sources.map(s=>s.id))if(this.stage3.has(id))this.stage3.invalidate(id,true);for(const id of ['calendar','lastfm','owntracks'])this.stage2.invalidate(id,true);this.ledger.clear();this.secrets.delete('lifeBridge');void this.start();}
+  forget(id: string, remove=false) {if(this.stage3.has(id))this.stage3.invalidate(id,true);if(['calendar','lastfm','owntracks'].includes(id))this.stage2.invalidate(id,true);this.ledger.forget(id,remove);if(id==='owntracks'){this.stage2.setup({...this.stage2.config,device:'',places:[],indoorRegions:[],location:{...this.stage2.config.location,publicLookup:false}});}if(id==='chrome')this.secrets.delete('lifeBridge');void this.start();}
+  clear(){for(const id of this.ledger.view().sources.map(s=>s.id))if(this.stage3.has(id))this.stage3.invalidate(id,true);for(const id of ['calendar','lastfm','owntracks'])this.stage2.invalidate(id,true);this.ledger.clear();this.stage2.setup({...this.stage2.config,device:'',places:[],indoorRegions:[],location:{...this.stage2.config.location,publicLookup:false}});this.secrets.delete('lifeBridge');void this.start();}
   stop(){this.stage3.stop();this.stage2.stop();this.generation++;for(const p of this.projects.values())p.stop();this.projects.clear();this.chrome.stop();this.ledger.flush();}
 }

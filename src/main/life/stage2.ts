@@ -4,7 +4,7 @@ import {randomBytes,createHash} from 'node:crypto';
 import {z} from 'zod';
 import {Stage2Config,type Stage2Settings,type Stage2View} from '../../shared/lifeContext';
 import type {SecretStore} from '../store/secrets';
-import type {Settings} from '../../shared/settings';
+import {DEFAULT_SETTINGS,type Settings} from '../../shared/settings';
 import {readJson,writeJsonAtomic} from '../store/jsonFile';
 import {HonchoMemory,type honchoTransport,type HonchoSource} from '../ai/honchoMemory';
 import type {LifeContext} from './context';
@@ -12,8 +12,9 @@ import {GoogleCalendar,type CalendarCheckpoint} from './calendar';
 import {Lastfm,emptyListening} from './lastfm';
 import {OwnTracks,emptyLocation} from './owntracks';
 import {ProviderError} from './network';
+import {LocationCheckpoint,GeoBudget} from '../../shared/location';
 const sourceKinds={calendar:'calendar',lastfm:'music',owntracks:'location'} as const;
-const SavedStage2=z.object({version:z.literal(1),calendar:z.record(z.string().max(256),z.object({token:z.string().max(8192).optional(),fullAt:z.number().finite().nonnegative(),fingerprints:z.record(z.string().max(100),z.object({hash:z.string().max(100),revision:z.number().int().nonnegative()})).refine(v=>Object.keys(v).length<=3000),ids:z.array(z.string().max(100)).max(2500)})).refine(v=>Object.keys(v).length<=12).default({}),lastfm:z.object({cursor:z.number().finite().nonnegative(),backfillTo:z.number().finite().nonnegative().optional(),tracks:z.array(z.object({id:z.string().max(100),artist:z.string().max(120),title:z.string().max(120),at:z.number().finite().nonnegative()})).max(3000),topsAt:z.number().finite().nonnegative(),tops:z.object({artists:z.array(z.string().max(250)).max(8),tracks:z.array(z.string().max(250)).max(8)})}).default(emptyListening()),owntracks:z.object({lastAt:z.number().finite().nonnegative(),seen:z.array(z.object({id:z.string().max(100),at:z.number().finite().nonnegative()})).max(3000),inside:z.record(z.string().max(60),z.object({since:z.number().finite().nonnegative(),last:z.number().finite().nonnegative(),dwell:z.boolean()})).refine(v=>Object.keys(v).length<=30)}).default(emptyLocation())});
+const SavedStage2=z.object({version:z.literal(1),geographicBudget:GeoBudget.default(()=>GeoBudget.parse({})),calendar:z.record(z.string().max(256),z.object({token:z.string().max(8192).optional(),fullAt:z.number().finite().nonnegative(),fingerprints:z.record(z.string().max(100),z.object({hash:z.string().max(100),revision:z.number().int().nonnegative()})).refine(v=>Object.keys(v).length<=3000),ids:z.array(z.string().max(100)).max(2500)})).refine(v=>Object.keys(v).length<=12).default({}),lastfm:z.object({cursor:z.number().finite().nonnegative(),backfillTo:z.number().finite().nonnegative().optional(),tracks:z.array(z.object({id:z.string().max(100),artist:z.string().max(120),title:z.string().max(120),at:z.number().finite().nonnegative()})).max(3000),topsAt:z.number().finite().nonnegative(),tops:z.object({artists:z.array(z.string().max(250)).max(8),tracks:z.array(z.string().max(250)).max(8)})}).default(emptyListening()),owntracks:LocationCheckpoint.default(emptyLocation())});
 export class Stage2 {
   config:Stage2Settings;readonly google:GoogleCalendar;readonly music:Lastfm;readonly receiver:OwnTracks;
   private calendars:{id:string;name:string}[]=[];
@@ -26,18 +27,25 @@ export class Stage2 {
     const raw=readJson(path.join(dir,'life-stage2-config.json'),Stage2Config.parse({})).value;this.config=Stage2Config.parse(raw);
     const parsed=SavedStage2.safeParse(readJson<unknown>(path.join(dir,'life-stage2-state.json'),{version:1}).value);if(!parsed.success)throw Error('Unrecognized Stage 2 checkpoints. Existing data preserved.');const saved=parsed.data;
     for(const [id,kind] of Object.entries(sourceKinds))if(!ledger.source(id))ledger.configure({id,kind,name:id==='calendar'?'Google Calendar':id==='lastfm'?'Last.fm':'OwnTracks',paused:false,sites:[],retentionDays:7,permissions:{collect:false,live:false,retain:false,content:false,learn:false}});
+    const locationSource=ledger.source('owntracks')!;if(locationSource.permissions.learn)ledger.configure({...locationSource,permissions:{...locationSource.permissions,learn:false}});
     if(this.retained('calendar'))this.checkpoints=saved.calendar??{};
     if(this.retained('lastfm'))this.listening=saved.lastfm??emptyListening();
     if(this.retained('owntracks'))this.location=saved.owntracks??emptyLocation();
-    this.google=new GoogleCalendar(secrets,ledger);this.music=new Lastfm(ledger);this.receiver=new OwnTracks(ledger,()=>this.config,()=>secrets.get('owntracksBasic'),this.location,()=>this.save());
+    // Purge legacy location-learning reading through the existing deletion protocol.
+    if(fs.existsSync(path.join(dir,'life-learning','owntracks','honcho-memory.json'))){const legacy=new HonchoMemory({dir:path.join(dir,'life-learning','owntracks'),settings:()=>({...DEFAULT_SETTINGS,memory:{...DEFAULT_SETTINGS.memory,honcho:{...DEFAULT_SETTINGS.memory.honcho,enabled:false}}}),history:()=>[],observations:()=>[],memories:()=>[],excluded:()=>new Set(),canWork:()=>true});this.learning.set('owntracks',legacy);void legacy.forget();legacy.start();}
+    this.google=new GoogleCalendar(secrets,ledger);this.music=new Lastfm(ledger);this.receiver=new OwnTracks(ledger,()=>this.config,()=>secrets.get('owntracksBasic'),this.location,()=>this.save());this.receiver.geography.restore(saved.geographicBudget);this.receiver.interpreter.prune(Date.now());this.save();
   }
+  private maintainedAt=0;
+  maintain(now=Date.now()){if(now-this.maintainedAt<60000)return;this.maintainedAt=now;const before=JSON.stringify(this.location);this.receiver.interpreter.prune(now);if(before!==JSON.stringify(this.location))this.save();}
   private retained(id:string){return this.persist()&&!!this.ledger.source(id)?.permissions.retain;}
   private active(id:string){const s=this.ledger.source(id);return !this.stopped&&this.enabled()&&!!s?.permissions.collect&&!s.paused;}
-  private save(){const now=Date.now();this.location.seen=this.location.seen.filter(e=>now-e.at<(this.ledger.source('owntracks')?.retentionDays??7)*86400000).slice(-3000);this.listening.tracks=this.listening.tracks.filter(t=>now-t.at<(this.ledger.source('lastfm')?.retentionDays??7)*86400000).slice(-3000);for(const [id,v] of Object.entries(this.location.inside))if(now-v.last>86400000)delete this.location.inside[id];this.ledger.flush();writeJsonAtomic(path.join(this.dir,'life-stage2-state.json'),{version:1,calendar:this.retained('calendar')?this.checkpoints:{},lastfm:this.retained('lastfm')?this.listening:emptyListening(),owntracks:this.retained('owntracks')?this.location:emptyLocation()});}
-  setup(raw:unknown){const config=Stage2Config.parse(raw);if(new Set(config.places.map(p=>p.id)).size!==config.places.length)throw Error('Place IDs must be unique.');
-    const changed:string[]=[];if(JSON.stringify(config.calendars)!==JSON.stringify(this.config.calendars))changed.push('calendar');if(config.lastfmUser!==this.config.lastfmUser)changed.push('lastfm');if(config.device!==this.config.device||JSON.stringify(config.places)!==JSON.stringify(this.config.places))changed.push('owntracks');
-    for(const id of changed)this.invalidate(id);this.config=config;writeJsonAtomic(path.join(this.dir,'life-stage2-config.json'),config);void this.start();return this.view();}
-  view():Stage2View{return{config:this.config,calendars:this.calendars,credentials:Object.fromEntries(['googleClient','googleClientSecret','googleRefresh','lastfmKey','owntracksBasic'].map(k=>[k,this.secrets.has(k as any)])),receiver:this.receiver.status,recentTracks:this.listening.tracks.slice(-10).reverse().map(({artist,title,at})=>({artist,title,at})),learning:Object.fromEntries([...this.learning].map(([id,m])=>[id,{state:m.status().state,detail:m.status().detail}])),spotifyScrobbling:'Not verifiable through Last.fm API. Check Last.fm Connected Applications and a Spotify scrobble. Current tracks can originate on any connected device.'};}
+  private save(){const now=Date.now();this.receiver?.interpreter.prune(now);this.location.seen=this.location.seen.filter(e=>now-e.at<(this.ledger.source('owntracks')?.retentionDays??7)*86400000).slice(-3000);this.listening.tracks=this.listening.tracks.filter(t=>now-t.at<(this.ledger.source('lastfm')?.retentionDays??7)*86400000).slice(-3000);for(const [id,v] of Object.entries(this.location.inside))if(now-v.last>86400000)delete this.location.inside[id];this.ledger.flush();writeJsonAtomic(path.join(this.dir,'life-stage2-state.json'),{version:1,geographicBudget:this.receiver.geography.budget(),calendar:this.retained('calendar')?this.checkpoints:{},lastfm:this.retained('lastfm')?this.listening:emptyListening(),owntracks:this.retained('owntracks')?{...this.location,lastFix:this.config.location.rawHours>0?this.location.lastFix:undefined}:emptyLocation()});}
+  setup(raw:unknown){const config=Stage2Config.parse(raw);if(new Set(config.places.map(p=>p.id)).size!==config.places.length)throw Error('Place IDs must be unique.');if(new Set(config.indoorRegions.map(p=>p.regionId+':'+p.waypointTimestamp)).size!==config.indoorRegions.length)throw Error('Pair each indoor region only once.');
+    const changed:string[]=[];if(JSON.stringify(config.calendars)!==JSON.stringify(this.config.calendars))changed.push('calendar');if(config.lastfmUser!==this.config.lastfmUser)changed.push('lastfm');if(config.device!==this.config.device)changed.push('owntracks');
+    const locationChanged=JSON.stringify(config.indoorRegions)!==JSON.stringify(this.config.indoorRegions)||JSON.stringify(config.places)!==JSON.stringify(this.config.places)||JSON.stringify(config.location)!==JSON.stringify(this.config.location);
+    if(locationChanged&&!changed.includes('owntracks')){this.ledger.invalidate('owntracks');this.receiver.stop();for(const p of config.indoorRegions)for(const v of this.location.visits.filter(v=>v.placeId==='beacon-'+p.id)){if(v.name!=='Beacon range near '+p.name){v.name='Beacon range near '+p.name;v.corrected=true;}}const validBeaconIds=new Set(config.indoorRegions.map(p=>'beacon-'+p.id));this.location.visits=this.location.visits.filter(v=>v.kind!=='beacon'||validBeaconIds.has(v.placeId));this.location.beaconSignals={};const removed=this.config.places.filter(p=>!config.places.some(q=>q.id===p.id)).map(p=>p.id);this.location.visits=this.location.visits.filter(v=>!removed.includes(v.placeId));for(const p of config.places){const prior=this.config.places.find(q=>q.id===p.id);if(JSON.stringify(p)!==JSON.stringify(prior))delete this.location.inside[p.id];if(prior&&p.name!==prior.name)for(const v of this.location.visits.filter(v=>v.placeId===p.id)){v.name=p.name;v.corrected=true;}}for(const id of removed)delete this.location.inside[id];}
+    for(const id of changed)this.invalidate(id);this.config=config;if(locationChanged){this.receiver.interpreter.prune(Date.now());this.receiver.interpreter.rebuild();this.save();}writeJsonAtomic(path.join(this.dir,'life-stage2-config.json'),config);void this.start();return this.view();}
+  view():Stage2View{return{config:this.config,calendars:this.calendars,credentials:Object.fromEntries(['googleClient','googleClientSecret','googleRefresh','lastfmKey','owntracksBasic'].map(k=>[k,this.secrets.has(k as any)])),receiver:this.receiver.status,location:this.receiver.view(),recentTracks:this.listening.tracks.slice(-10).reverse().map(({artist,title,at})=>({artist,title,at})),learning:Object.fromEntries([...this.learning].map(([id,m])=>[id,{state:m.status().state,detail:m.status().detail}])),spotifyScrobbling:'Not verifiable through Last.fm API. Check Last.fm Connected Applications and a Spotify scrobble. Current tracks can originate on any connected device.'};}
   credential(key:'googleClient'|'googleClientSecret'|'lastfmKey',value:string){this.invalidate(key.startsWith('google')?'calendar':'lastfm');if(key.startsWith('google')){this.google.stop();this.secrets.delete('googleRefresh');}this.secrets.set(key,value);void this.start();}
   generate(){this.invalidate('owntracks');const username='capri',password=randomBytes(32).toString('base64url');this.secrets.set('owntracksBasic',username+':'+password);void this.start();return{username,password,persistent:this.secrets.persistent};}
   async list(){const ctl=new AbortController(),epoch=this.epochs.get('calendar')??0;this.controllers.get('calendar')?.abort();this.controllers.set('calendar',ctl);try{const list=await this.google.list(ctl.signal);if(ctl.signal.aborted||epoch!==(this.epochs.get('calendar')??0))return this.view();this.calendars=list;}finally{if(this.controllers.get('calendar')===ctl)this.controllers.delete('calendar');}return this.view();}
@@ -48,7 +56,7 @@ export class Stage2 {
     this.ledger.invalidate(id);
     if(id==='calendar'){this.checkpoints={};this.calendars=[];this.google.stop();if(credentials)this.secrets.delete('googleRefresh');}
     if(id==='lastfm'){this.listening=emptyListening();if(credentials)this.secrets.delete('lastfmKey');}
-    if(id==='owntracks'){Object.assign(this.location,emptyLocation());this.receiver.stop();if(credentials)this.secrets.delete('owntracksBasic');}
+    if(id==='owntracks'){this.receiver.reset();Object.assign(this.location,emptyLocation());this.receiver.stop();if(credentials)this.secrets.delete('owntracksBasic');}
     this.save();
   }
   async start(){this.stopped=false;for(const id of Object.keys(sourceKinds)){if(!this.active(id)){void this.learning.get(id)?.privacyChanged();this.controllers.get(id)?.abort();const t=this.timers.get(id);if(t)clearTimeout(t);this.timers.delete(id);if(id==='owntracks')this.receiver.stop();continue;}if(id==='owntracks'){if(this.receiver.status==='Disabled')await this.receiver.start();}else if(!this.timers.has(id)&&!this.controllers.has(id))void this.sync(id);}}
@@ -70,6 +78,7 @@ export class Stage2 {
   private schedule(id:string,delay:number){const t=setTimeout(()=>{this.timers.delete(id);void this.sync(id);},delay);t.unref();this.timers.set(id,t);}
   startLearning(settings:()=>Settings,canWork:()=>boolean,transport?:typeof honchoTransport){
     for(const id of [...Object.keys(sourceKinds),...this.learningProviders.keys()]){
+      if(id==='owntracks')continue; // Location identities and histories never enter external memory.
       const dir=path.join(this.dir,'life-learning',id);fs.mkdirSync(dir,{recursive:true});
       const memory=new HonchoMemory({dir,settings:()=>{const s=structuredClone(settings()),p=this.ledger.source(id);s.memory.honcho.enabled=s.memory.honcho.enabled&&!!p?.permissions.learn&&!!p.permissions.retain&&!!p.permissions.collect&&!p.paused&&this.enabled();return s;},transport,history:()=>[],observations:()=>{
         const p=this.ledger.source(id);if(!p?.permissions.learn||!this.retained(id))return[];
@@ -83,13 +92,7 @@ export class Stage2 {
       },memories:()=>[],excluded:()=>new Set(),canWork});this.learning.set(id,memory);memory.start();
     }
   }
-  pcActivity(idleSeconds:number,now=Date.now()){
-    if(!this.active('owntracks')||idleSeconds>30)return;
-    const current=this.ledger.current(),arrival=this.ledger.view().events.find(e=>e.source==='owntracks'&&e.type==='place-arrival'&&now-e.occurredAt<=300000&&now>=e.occurredAt);
-    if(!arrival||!current.some(e=>e.source==='owntracks'&&e.recordId==='presence'&&e.summary.endsWith(arrival.summary.split('arrived near ')[1])))return;
-    const recordId='pc:'+arrival.recordId;if(this.ledger.view().events.some(e=>e.source==='owntracks'&&e.recordId===recordId))return;
-    this.ledger.ingest({...arrival,recordId,revision:now,type:'place-pc-corroboration',receivedAt:now,expiresAt:arrival.occurredAt+300000,summary:arrival.summary+'; actual PC input is also recent',detail:arrival.detail+' PC input was observed within 30 seconds. A selective acknowledgement or silence is appropriate. Do not claim an activity or continuous tracking.',importance:.6});
-  }
+  pcActivity(_idleSeconds:number,_now=Date.now()){} // PC activity cannot corroborate physical location.
   musicContext(track:{title:string;artist:string}|null){
     if(!track||!this.active('lastfm')||!this.ledger.source('lastfm')?.permissions.live)return '';
     const matches=this.listening.tracks.filter(t=>t.title.toLowerCase()===track.title.toLowerCase()&&t.artist.toLowerCase()===track.artist.toLowerCase());
