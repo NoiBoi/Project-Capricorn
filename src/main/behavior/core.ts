@@ -374,11 +374,13 @@ export class BehaviorCore {
       const autonomous = event.kind === 'trigger' && !event.direct;
       const attention = this.d.attention?.(event) ?? (event.kind === 'trigger' ? (event.context as {attention?:{engaged?:boolean;opportunity?:string}}|undefined)?.attention : undefined);
       const appraisal = decision.expression;
-      const unearnedSpeech = autonomous && attention && (!appraisal || appraisal.contribution === 'none' || appraisal.contribution === 'report'
+      // Older providers can still answer real participation without the new
+      // envelope. Missing appraisal never authorizes an unsolicited aside.
+      const unearnedSpeech = autonomous && attention && (appraisal ? appraisal.contribution === 'none' || appraisal.contribution === 'report'
         || appraisal.timing === 'wait'
         || appraisal.contribution === 'response' && !attention.engaged
         || appraisal.timing === 'engaged' && !attention.engaged
-        || attention.opportunity === 'occupied' && !attention.engaged && !(appraisal.contribution === 'important' && appraisal.timing === 'urgent'));
+        || attention.opportunity === 'occupied' && !attention.engaged && !(appraisal.contribution === 'important' && appraisal.timing === 'urgent') : !attention.engaged);
       const unsupportedBody = appraisal && appraisal.physicalClaim !== 'none' && this.d.physicalClaimAllowed?.(appraisal.physicalClaim,event) !== true;
       if (decision.action === 'speak' && (unearnedSpeech || unsupportedBody)) {
         decision = { ...decision, action: 'defer', line: '', gesture: 'none', reason: unsupportedBody ? 'Completed physical claim lacks a current receipt.' : 'Observation retained; contribution or interruption is not warranted.' }; line = '';

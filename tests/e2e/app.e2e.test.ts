@@ -2243,9 +2243,9 @@ describe('contextual companion interactions', () => {
   });
   it('comments on the focused window after a cursor trip rather than the old perch target', async () => {
     let target = '';
-    const mock = await mockModel(body => { target = companionRequest(body).context.target.title; return 'Ooh, that little diagram. Good place to end up.'; });
+    const mock = await mockModel(body => { target = companionRequest(body).context.target.title; return JSON.stringify(visualDecision({line:'Ooh, that little diagram. Good place to end up.'})); });
     try {
-      const { app } = await launch(openaiProfile(mock.url, { memory: { autoLearn: false }, behavior: { quietHours: { enabled: false } }, teleport: { effects: false } }));
+      const { app } = await launch(openaiProfile(mock.url, { memory: { autoLearn: false }, behavior: { idleRemarks:true, quietHours: { enabled: false } }, teleport: { effects: false } }));
       await app.evaluate(async ({ screen }) => {
         const g = globalThis as any, a = g.__capri, area = screen.getPrimaryDisplay().workArea;
         g.__capriDesktopOverride = { title: 'Test', process: 'test.exe' };
@@ -2255,7 +2255,7 @@ describe('contextual companion interactions', () => {
         await a.curiosityDetour('Let me look.');
       });
       expect(target).toBe('Focused diagram'); expect(mock.calls).toBe(1);
-      expect(await app.evaluate(() => (globalThis as any).__capri.bubble.state.text)).toContain('little diagram');
+      await expect.poll(()=>app.evaluate(()=>(globalThis as any).__capri.bubble.state.text)).toContain('little diagram');
     } finally { await mock.close(); }
   });
   it('keeps a clock-only opportunity quiet without creating retired ping history', async () => {

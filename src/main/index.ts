@@ -1733,7 +1733,7 @@ async function generatedRemark(event: string, detail = '', options: { target?: b
   const sceneRevision = conversationScene.snapshot().revision;
   const physicalState = physicalSignature();
   const valid = () => cognitiveRuntime.executionRevision() === cognitiveRevision && collection === behaviorCollectionRevision && revision === placementRevision
-    && (options.developer||['pat','poke','pickup','putdown','placed_window','personal_followup','inspect'].includes(event)||physicalState === physicalSignature())
+    && (options.developer||['pat','poke','pickup','putdown','placed_window','personal_followup','inspect','cursor_return'].includes(event)||physicalState === physicalSignature())
     && (options.placement === undefined || options.placement === placementRevision)
     && sceneRevision === conversationScene.snapshot().revision
     && (!target || !!trackedWindowFor(target) && observedWindow(target).title === observed?.title && observedWindow(target).process === observed?.process);

@@ -8,7 +8,7 @@ import { closeIsolatedApp } from './lifecycle';
 it('wires one cognitive owner into actual chat, optional delivery and native movement admission',async()=>{
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'capri-cognitive-runtime-'));let app:ElectronApplication|undefined;
   fs.writeFileSync(path.join(dir,'settings.json'),JSON.stringify({firstRunComplete:true,ai:{provider:'offline'},memory:{enabled:true,autoLearn:false},character:{startupIntro:false,hideOnFullscreen:false},voice:{ttsEnabled:false,interactionLines:true},behavior:{smallActivities:false,idleRemarks:false,explore:false,quietHours:{enabled:false}},teleport:{auto:false,effects:false}}));
-  const boot=async()=>{app=await electron.launch({args:[path.resolve(__dirname,'../..')],env:{...process.env,CAPRI_TEST:'1',CAPRI_OFFSCREEN:'1',CAPRI_NO_DEV_KEY:'1',CAPRI_USER_DATA:dir}});const page=await app.firstWindow();await page.waitForFunction(()=>!!(window as any).__capriDebug);return app;};
+  const boot=async()=>{app=await electron.launch({...process.env.CAPRI_EXE?{executablePath:process.env.CAPRI_EXE,args:[]}:{args:[path.resolve(__dirname,'../..')]},env:{...process.env,CAPRI_TEST:'1',CAPRI_OFFSCREEN:'1',CAPRI_NO_DEV_KEY:'1',CAPRI_USER_DATA:dir}});const page=await app.firstWindow();await page.waitForFunction(()=>!!(window as any).__capriDebug);return app;};
   try{
     const first=await boot();
     const result=await first.evaluate(async()=>{

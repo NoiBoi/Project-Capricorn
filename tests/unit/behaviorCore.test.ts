@@ -62,12 +62,16 @@ describe('integrated behavioral decision lifecycle', () => {
     expect(await core.dispatch(event)).toMatchObject({action:'speak',delivered:true});
   });
   it('fails closed for absent appraisals on host-attended speech and checks completed physical claims',async()=>{
-    const s=setup();let receipt=false;
+    const s=setup();let receipt=false,engaged=false;
     const core=new BehaviorCore({directory:s.dir,scene:s.scene,provider:s.provider,memories:()=>[],now:()=>START,
-      attention:()=>({engaged:false,opportunity:'transition'}),physicalClaimAllowed:()=>receipt,express:()=>true});
+      attention:()=>({engaged,opportunity:'transition'}),physicalClaimAllowed:()=>receipt,express:()=>true});
     const event={...s.trigger('roam'),direct:false,budgetReserved:true};
     s.answer({...hold,action:'speak',line:'I made it over here.'});
     expect(await core.dispatch(event)).toMatchObject({action:'defer',delivered:false});
+    engaged=true;
+    s.answer({...hold,action:'speak',line:'I still prefer the violet.'});
+    expect(await core.dispatch(event)).toMatchObject({action:'speak',delivered:true});
+    engaged=false;
     s.answer({...hold,action:'speak',line:'I made it over here.',expression:{contribution:'personal',timing:'opening',development:'new',physicalClaim:'arrival'}});
     expect(await core.dispatch(event)).toMatchObject({action:'defer',delivered:false});
     receipt=true;expect(await core.dispatch(event)).toMatchObject({action:'speak',delivered:true});
