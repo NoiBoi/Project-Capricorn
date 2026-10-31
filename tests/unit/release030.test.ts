@@ -27,9 +27,12 @@ it('collapses an unattended composer, protects hover and unsent drafts, then fad
   bubble.draft(false);vi.advanceTimersByTime(4000);expect(bubble.state.composer).toBe(false);expect(bubble.state.delivery).toBe('aside');
   vi.advanceTimersByTime(10230);expect(bubble.hasVisibleText).toBe(false);
 });
-it('holds a supported long recline across fifteen minutes but releases it for sleep or movement',()=>{
+it('allows sitting, standing and reclining on a lower ledge, and releases poses when blocked',()=>{
   const b=new SecondaryBehavior(),input={enabled:true,blocked:false,support:{sit:true,lie:true,kind:'taskbar' as const,sustainedRest:true},inverted:false,hovering:false,inspectingBelow:false,patting:false};
-  for(let second=0;second<900;second++)expect(b.update(1,input).pose).toBe('recline');
+  const samples=Array.from({length:900},()=>b.update(1,input));
+  expect(samples.some(s=>s.pose==='recline')).toBe(true);
+  expect(samples.some(s=>s.standing)).toBe(true);
+  expect(samples.some(s=>s.pose===null&&!s.standing)).toBe(true);
   expect(b.update(1,{...input,blocked:true}).pose).toBeNull();
 });
 it('honors the configured sleep threshold and returns on user activity',()=>{

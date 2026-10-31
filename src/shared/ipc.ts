@@ -9,7 +9,7 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   ts: number;
-  meta?: { speech?:SpeechOrigin; provider?: string; error?: string; interrupted?: boolean; actionStatus?: string; private?: boolean; contextSources?: string[] };
+  meta?: { speech?:SpeechOrigin; provider?: string; error?: string; interrupted?: boolean; actionStatus?: string; private?: boolean; contextSources?: string[]; contextRecall?:boolean };
 }
 
 export interface MemoryRevision {

@@ -26,7 +26,7 @@ it('recognizes corroborated city/state endpoints without inferring route or relo
 it('persists supported evidence across restart but refuses to bridge an offline gap',()=>{const s=setup();for(const t of [0,4,8])s.report(t);const saved=LocationCheckpoint.parse(JSON.parse(JSON.stringify(s.state))),r=new OwnTracks(s.life,()=>s.cfg,()=> 'x:y',saved,()=>{},0);stops.push(()=>r.stop());r.accept(s.fix(12),'iphone');r.accept(s.fix(16),'iphone');expect(saved.visits.at(-1)?.state).toBe('confirmed');r.accept(s.fix(40),'iphone');expect(saved.visits.at(-1)?.state).toBe('nearby');expect(saved.visits.at(-1)?.supportedMs).toBe(0);expect(saved.visits[0].reason).toContain('departure unknown');});
 it('corrections win, deleting or ignoring revokes dependent context and can prevent rediscovery',()=>{const s=setup();for(const t of [0,4,8,12,16])s.report(t);const v=s.state.visits[0];s.r.edit(v.id,'rename','Training building');s.report(17);expect(new ContextAssembler(s.life).assemble('Where?')).toContain('Training building');s.r.edit(v.id,'ignore');expect(s.life.current()).toEqual([]);s.report(18);expect(s.state.visits).toEqual([]);s.life.configure({...s.life.source('owntracks')!,paused:true});expect(()=>s.report(19)).toThrow('authorized');});
 it('migrates legacy places without losing unrelated checkpoints and stores no coordinates with raw retention zero',()=>{const s=setup(),secrets=new SecretStore(s.dir,{available:()=>false,encrypt:()=>Buffer.alloc(0),decrypt:()=>''});fs.writeFileSync(path.join(s.dir,'life-stage2-config.json'),JSON.stringify({calendars:['primary'],lastfmUser:'listener',device:'iphone',places:[{id:'home',name:'Home',lat:40,lon:-86,radius:150,entities:[]}]}));fs.writeFileSync(path.join(s.dir,'life-stage2-state.json'),JSON.stringify({version:1,calendar:{primary:{token:'keep',fullAt:base,fingerprints:{},ids:[]}},owntracks:{lastAt:0,seen:[],inside:{home:{since:base,last:base,dwell:true}}}}));s.life.configure({id:'calendar',kind:'calendar',name:'Calendar',permissions:{collect:false,live:false,retain:true,content:false,learn:false}});const stage=new Stage2(s.dir,s.life,secrets,()=>true,()=>false);stops.push(()=>stage.stop());expect(stage.config.places[0].dwellMinutes).toBe(15);stage.setup({...stage.config,location:{...stage.config.location,rawHours:0}});stage.receiver.accept(s.fix(0),'iphone');stage.stop();const saved=JSON.parse(fs.readFileSync(path.join(s.dir,'life-stage2-state.json'),'utf8'));expect(saved.calendar.primary.token).toBe('keep');expect(saved.owntracks.lastFix).toBeUndefined();expect(stage.config.lastfmUser).toBe('listener');});
-it('uses coarse spatial cache, deduplicates requests, backs off and cancels late responses',async()=>{let now=base,calls=0,query='',release:(v:Response)=>void=()=>{};const g=new Geography(()=>({overpass:'https://overpass.test/api',geocoder:'https://search.test'}),(async(_u,init)=>{calls++;query=String(init?.body);return new Promise<Response>(r=>release=r);}) as typeof fetch,()=>now);const pending=g.nearby({lat:40.1234567,lon:-86.7654321});expect(await g.nearby({lat:40.1234568,lon:-86.7654322})).toEqual([]);release(new Response(JSON.stringify({elements:[]})));await pending;expect(calls).toBe(1);expect(query).not.toContain('40.1234567');await g.nearby({lat:40.12349,lon:-86.76549});expect(calls).toBe(1);now+=61000;const late=g.nearby({lat:41,lon:-85});g.clear();release(new Response(JSON.stringify({elements:[]})));await late;expect(g.cached({lat:41,lon:-85})).toEqual([]);let failCalls=0;const failed=new Geography(()=>({overpass:'https://overpass.test',geocoder:'https://search.test'}),(async()=>{failCalls++;return new Response('',{status:429,headers:{'retry-after':'600'}});}) as typeof fetch,()=>now);await failed.nearby({lat:40,lon:-86});now+=120000;await failed.nearby({lat:41,lon:-85});expect(failCalls).toBe(1);});
+it('uses coarse spatial cache, deduplicates requests, backs off and cancels late responses',async()=>{let now=base,calls=0,query='',release:(v:Response)=>void=()=>{};const g=new Geography(()=>({overpass:'https://overpass.test/api',geocoder:'https://search.test'}),(async(_u,init)=>{calls++;query=String(init?.body);return new Promise<Response>(r=>release=r);}) as typeof fetch,()=>now);const pending=g.nearby({lat:40.1234567,lon:-86.7654321});const shared=g.nearby({lat:40.1234568,lon:-86.7654322});release(new Response(JSON.stringify({elements:[]})));await pending;expect(await shared).toEqual([]);expect(calls).toBe(1);expect(query).not.toContain('40.1234567');await g.nearby({lat:40.12349,lon:-86.76549});expect(calls).toBe(1);now+=61000;const late=g.nearby({lat:41,lon:-85});g.clear();release(new Response(JSON.stringify({elements:[]})));await late;expect(g.cached({lat:41,lon:-85})).toEqual([]);let failCalls=0;const failed=new Geography(()=>({overpass:'https://overpass.test',geocoder:'https://search.test'}),(async()=>{failCalls++;return new Response('',{status:429,headers:{'retry-after':'600'}});}) as typeof fetch,()=>now);await failed.nearby({lat:40,lon:-86});now+=120000;await failed.nearby({lat:41,lon:-85});expect(failCalls).toBe(1);});
 it('parses only closed geometry and bounded explicit search with attribution-safe text',async()=>{expect(features({elements:[{type:'way',id:1,tags:{name:'Building',building:'yes'},geometry:polygon},{type:'node',id:2,lat:40,lon:-86,tags:{name:'Tenant',shop:'yes'}}]}).map(f=>f.kind)).toEqual(['building','tenant']);const calls:string[]=[];const g=new Geography(()=>({overpass:'https://overpass.test',geocoder:'https://search.test'}),(async u=>{calls.push(String(u));return new Response(JSON.stringify([{osm_type:'way',osm_id:1,lat:'40',lon:'-86',display_name:'Campus building',geojson:{type:'Polygon',coordinates:[polygon.map(p=>[p.lon,p.lat])]}}]));}) as typeof fetch);const result=await g.search('Campus building');expect(result[0].polygon).toHaveLength(5);await g.search('Campus building');expect(calls).toHaveLength(1);expect(calls[0]).toContain('polygon_geojson=1');});
 it('preserves Tailscale routes and blocks conflicts, Funnel, stale approvals and non-private configuration',async()=>{let cfg:any={TCP:{'443':{HTTPS:true}},Web:{'pc.test.ts.net:443':{Handlers:{'/':{Proxy:'http://127.0.0.1:1234'}}}}},mutations:string[][]=[];const setup=new LocationSetup(async args=>{if(args[0]==='status')return JSON.stringify({BackendState:'Running',Self:{DNSName:'pc.test.ts.net.',Online:true}});if(args[1]==='status')return JSON.stringify(cfg);mutations.push(args);cfg={...cfg,TCP:{...cfg.TCP,'8443':{HTTPS:true}},Web:{...cfg.Web,'pc.test.ts.net:8443':{Handlers:{'/':{Proxy:'http://127.0.0.1:43130'}}}}};return '';});const n=await setup.inspect();expect(n.url).toBeUndefined();const ready=await setup.enable(setup.fingerprint(n));expect(mutations).toEqual([['serve','--bg','--https=8443','http://127.0.0.1:43130']]);expect(cfg.Web['pc.test.ts.net:443'].Handlers['/'].Proxy).toContain('1234');expect(phoneConfig(ready.url!,'iphone','capri:pw')).toMatchObject({mode:3,deviceId:'iphone',httpHeaders:'X-Limit-D: iphone',cmd:false,allowinvalidcerts:false});await expect(setup.enable(setup.fingerprint(n))).rejects.toThrow('changed');cfg.AllowFunnel={'pc.test.ts.net:8443':true};expect((await setup.inspect()).url).toBeUndefined();expect(()=>phoneConfig('https://public.example:8443/pub','iphone','a:b')).toThrow();});
 
@@ -64,4 +64,51 @@ it('does not turn a delayed timestamp into live GPS or erase retained health on 
 
 it('does not clear a rejected-report warning just because a previous fix is still fresh',()=>{
  const s=setup();s.report(0);s.life.setHealth('owntracks',{state:'degraded',detail:'Phone credentials rejected.'});s.r.refreshHealth();expect(s.life.view().health.owntracks.detail).toBe('Phone credentials rejected.');s.report(1);expect(s.life.view().health.owntracks.state).toBe('healthy');
+});
+
+it('matches personal whereabouts without injecting visits into unrelated everyday wording',()=>{
+ const s=setup();s.report(0);
+ for(const q of ['Do you know where I am?',"Can you tell where I'm at?",'Where is my phone?','What is my current position?','Where have I been recently?','Was I near the Gym?','When was I last at the Gym?','What are my recent visits?'])expect(s.r.query(q),q).not.toBe('');
+ for(const q of ['Where did this function go?','I have been working lately','Visit this website','Go ahead','Home screen design','What should I cook at home?','The gym interface needs a new color'])expect(s.r.query(q),q).toBe('');
+});
+it('returns chronological evidence, confidence and explicit incomplete coverage',()=>{
+ const s=setup();s.report(0);s.report(40);
+ const p=JSON.parse(s.r.query('Where have I been recently?'));
+ expect(p.visits.map((v:any)=>v.since)).toEqual([base,base+40*60000]);
+ expect(p.visits.every((v:any)=>v.confidence==='low'&&v.current===false)).toBe(true);
+ expect(p.coverage.gaps).toContain('unknown');expect(JSON.stringify(p)).not.toMatch(/"(?:lat|lon)":/);
+});
+it('applies asynchronous public geography to its original fix without adding corroborating samples',async()=>{
+ const s=setup();s.cfg.places=[];s.cfg.location.publicLookup=true;await s.r.start();
+ let resolve!:(v:GeoFeature[])=>void;vi.spyOn(s.r.geography,'nearby').mockImplementation(()=>new Promise(r=>{resolve=r;}));
+ s.report(0);expect(s.state.visits).toEqual([]);resolve([building]);await Promise.resolve();await Promise.resolve();
+ expect(s.state.visits[0]).toMatchObject({name:'Campus building',observations:1,supportedMs:0,state:'nearby'});
+});
+it('discards a late public lookup after a newer report or source revocation',async()=>{
+ const s=setup();s.cfg.places=[];s.cfg.location.publicLookup=true;await s.r.start();
+ const pending:((v:GeoFeature[])=>void)[]=[];vi.spyOn(s.r.geography,'nearby').mockImplementation(()=>new Promise(r=>pending.push(r)));
+ s.report(0);s.report(1);pending[0]([building]);await Promise.resolve();expect(s.state.visits).toEqual([]);
+ s.life.configure({...s.life.source('owntracks')!,paused:true});pending[1]([building]);await Promise.resolve();expect(s.state.visits).toEqual([]);
+});
+it('offers a coarse permitted area without implying a recognized visit',()=>{
+ const s=setup();s.cfg.places=[];s.cfg.location.publicLookup=true;s.report(0);
+ vi.spyOn(s.r.geography,'cached').mockReturnValue([{id:'city',name:'Fixture City',kind:'region',level:8,point:{lat:40,lon:-86}}]);
+ const p=JSON.parse(s.r.query('Where am I?'));expect(p.lastPhonePosition.coarseArea).toBe('Fixture City');expect(p.visits).toEqual([]);
+ expect(JSON.stringify(p)).not.toMatch(/"(?:lat|lon)":/);
+});
+
+it('keeps phone evidence out of unrelated assembled chat even when a fresh presence exists',()=>{
+ const s=setup();for(const t of [0,4,8,12,16])s.report(t);
+ const assembler=new ContextAssembler(s.life,q=>s.r.query(q));
+ const unrelated=assembler.assemble('Explain a violet oscillator control');expect(unrelated).not.toContain('Gym');expect(assembler.suppliedSources).not.toContain('owntracks');
+ const relevant=assembler.assemble('Where am I?');expect(relevant).toContain('Gym');expect(assembler.suppliedSources).toContain('owntracks');
+});
+
+it('shares in-flight public lookup results with the latest report in the same coarse tile',async()=>{
+ const s=setup();s.cfg.places=[];s.cfg.location.publicLookup=true;await s.r.start();
+ let release!:(v:Response)=>void;const fetcher=vi.fn(()=>new Promise<Response>(r=>{release=r;}));(s.r.geography as any).fetcher=fetcher;
+ s.report(0);s.report(1);
+ release(new Response(JSON.stringify({elements:[{type:'way',id:1,tags:{building:'yes',name:'Campus building'},geometry:polygon}]})));
+ await vi.waitFor(()=>expect(s.state.visits[0]?.name).toBe('Campus building'));
+ expect(fetcher).toHaveBeenCalledTimes(1);expect(s.state.visits[0]).toMatchObject({observations:1,supportedMs:0,last:base+60000,state:'nearby'});
 });

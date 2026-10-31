@@ -92,6 +92,8 @@ quotations, user memories, or a playlist of fallback lines.
 
 ## Cumulative preference ledger
 
+- **2026-10-30, 1.5.3 reliability:** Preserve source-backed exchanges as dated dialogue while permission remains valid; historical proximity never becomes a current location claim. Revocation withdraws dependent recall. Select original observations and delivered opinions by subject, and keep expired interests out of active inference context. Minor observations may pass silently; an existing curiosity can guide another look when relevant evidence changes. No increased speech schedule or new personality rules.
+
 - **2026-10-30, 1.4.1:** “Go to Discord and chill there until I say so” must create and execute an indefinite window stay. Do not substitute a conversational promise for native execution. Natural variants may use the existing structured movement action and the same durable agency skill; unsuccessful action selection must remain honest.
 
 - **2026-10-30, 1.4:** Timed window intentions survive handling until released or superseded. Shared bounded working context connects delivered chat and desktop thoughts; inactive subjects fade and privacy resets win. Treat rapid physical interactions as a developing exchange, keeping counts internal. Preserve contextual initiative, playful objections, affection and independent opinions.

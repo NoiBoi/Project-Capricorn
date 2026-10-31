@@ -195,8 +195,12 @@ describe('MemoryStore', () => {
     expect(new MemoryStore(dir).list()).toEqual([]);
   });
   it('enforces a size cap', () => {
-    const m = new MemoryStore(tmpDir());
-    for (let i = 0; i < MemoryStore.MAX; i++) m.add(`fact ${i}`, 'user');
+    const dir=tmpDir();
+    // Exercise the boundary and persistence without 1,000 synchronous disk rewrites.
+    fs.writeFileSync(path.join(dir,'memory.json'),JSON.stringify(Array.from({length:MemoryStore.MAX-1},(_,i)=>({id:'m'+i,text:`fact ${i}`,source:'user',status:'approved',createdAt:Date.now()}))));
+    const m = new MemoryStore(dir);
+    m.add('last available fact','user');
+    expect(new MemoryStore(dir).list()).toHaveLength(MemoryStore.MAX);
     expect(() => m.add('one too many', 'user')).toThrow(/full/);
   });
 });

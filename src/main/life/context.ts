@@ -222,7 +222,7 @@ export class ContextAssembler {
       return score;};
     const counts=new Map<string,number>();
     const location=mode==='chat'?this.locationQuery?.(query)??'':'';
-    const fresh=[...this.life.current(mode,false),...this.life.userReports()].filter(e=>!location||e.source!=='owntracks'),ids=new Set(fresh.map(e=>key(e)));
+    const fresh=[...this.life.current(mode,false),...this.life.userReports()].filter(e=>e.source!=='owntracks'||!location&&!(mode==='chat'&&this.locationQuery)),ids=new Set(fresh.map(e=>key(e)));
     const historical=entities.length?this.life.latest().filter(e=>{const s=this.life.source(e.source);return !ids.has(key(e))&&e.operation!=='delete'&&e.expiresAt<=this.life.time()&&e.entities.some(id=>entities.includes(id))&&s?.permissions.collect&&!s.paused&&(mode==='chat'?s.permissions.live&&e.permissions.live:(s.permissions.proactive??s.permissions.live)&&(e.permissions.proactive??e.permissions.live));}).slice(-2):[];
     const projections=this.life.world(mode);
     const records=[...fresh,...historical].sort((a,b)=>rank(b)-rank(a)||b.occurredAt-a.occurredAt).filter(e=>{const n=counts.get(e.source)??0;counts.set(e.source,n+1);return n<2;}).slice(0,6);

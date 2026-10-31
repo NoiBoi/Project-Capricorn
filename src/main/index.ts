@@ -574,7 +574,7 @@ async function init() {
   honcho = new HonchoMemory({ dir, settings: () => settings.get(), history: () => history.recallHistory(), memories: () => memory.approved(), excluded: () => scenes.excludedSources(), canWork: () => !convo?.busy && !behavior?.busy && settings.get().behavior.mode !== 'sleep' && !developer.active, changed: () => toPanel('memory:changed', null) });
   cognitiveStore.transaction(() => {
     life = new LifeService(dir, secrets, source => cognitive.revoke(source,
-      () => { diagnosticTraces?.clear(); modelSessions?.invalidate(source); dialogueCognition?.clear(); cancelBehavior(); convo?.stop(); memoryLearner?.pause(); },
+      () => { diagnosticTraces?.clear(); history.invalidateContext(source); modelSessions?.invalidate(source); dialogueCognition?.clear(); cancelBehavior(); convo?.stop(); memoryLearner?.pause(); },
       () => { cognitiveRuntime?.clear(); behavior?.clear(); }, [chatEvidence, ambientEvidence]),
       () => settings.get().memory.enabled && settings.get().dialogue.localContext,
       () => settings.get().privacy.saveHistory && settings.get().memory.enabled, cognitiveStore);
@@ -682,6 +682,8 @@ async function init() {
     pauseLearning: () => { learner.pause(); cancelBehavior(); visit.cancel(); },
     queueLearning: (text, messageId) => { learner.enqueue(text, messageId); },
     contextSources: () => chatEvidence.snapshot(),
+    retainContextSources:mayRecallSourceHistory,
+    excludedContextSources:()=>new Set(['action:untrusted',...life.ledger.view().sources.filter(s=>s.paused||!s.permissions.collect||!s.permissions.live||!settings.get().memory.enabled||!settings.get().dialogue.localContext).map(s=>s.id),...(!settings.get().privacy.activityAwareness.enabled||!settings.get().memory.enabled||!settings.get().dialogue.localContext?['activity-patterns']:[])]),
     onModelSession: session => cognitive.session(session),
     onExecutionReceipt: receipt => cognitive.receipt(receipt),
     resumeLearning: () => learner.schedule(settings.get().ai.provider === 'codex' ? 60000 : 2000),
@@ -1824,7 +1826,7 @@ function rememberScene(kind: 'said' | 'action', text: string, surface?: string, 
     if (kind === 'said') {
       const at=Date.now();
       conversationScene.record({ id, role: 'assistant', text, at, event: surface ?? 'desktop',contextSources });
-      const message:ChatMessage={id,role:'assistant',content:text,ts:at,meta:{speech,provider:'companion',contextSources,private:behavior?.diagnostics().privateExchange??false}};
+      const message:ChatMessage={id,role:'assistant',content:text,ts:at,meta:{speech,provider:'companion',contextSources,contextRecall:contextSources.length>0&&mayRecallSourceHistory(contextSources),private:behavior?.diagnostics().privateExchange??false}};
       history.append(message);toPanel('chat:message',{message});
       cognitiveRuntime.observeMessage(message);
       if(contextSources.includes('activity-patterns'))interactionProfile.activityDelivered(text);
@@ -1857,6 +1859,9 @@ function sourceLearningContext(mode: 'chat' | 'proactive', evidence: RequestEvid
   const text = life.stage2.learningContext(mode);
   for (const match of text.matchAll(/OPT-IN ([^\s]+) SUMMARIZED SOURCE LEARNING/g)) evidence.include([match[1]]);
   return text;
+}
+function mayRecallSourceHistory(sources:readonly string[]){
+  return settings.get().memory.enabled&&settings.get().privacy.saveHistory&&settings.get().dialogue.localContext&&sources.every(id=>id==='activity-patterns'?settings.get().privacy.activityAwareness.enabled:life?.ledger.source(id)?.permissions.retain===true);
 }
 function forgetActivityContext(){
   diagnosticTraces?.clear();

@@ -36,7 +36,15 @@ export class ConversationSessions {
     if(!retain())this.clear();
   }
   snapshot(){return structuredClone(this.state);}
-  private save(){if(this.closed)return;if(this.retain()||this.state.pendingDeletion.length)this.store.save('model-sessions',this.state);else this.store.removeCheckpoint('model-sessions');}
+  private save(){
+    if(this.closed)return;
+    // Source threads are ephemeral provider state, retained only in this process.
+    // A restart reconstructs permitted dialogue from application-owned records.
+    const saved={...this.state,current:this.state.current==='source'?'primary':this.state.current,
+      sessions:this.state.sessions.filter(s=>s.handle.scope!=='source'),
+      pendingDeletion:this.state.pendingDeletion.filter(h=>h.scope!=='source'&&h.scope!=='private')};
+    if(this.retain()||saved.pendingDeletion.length)this.store.save('model-sessions',saved);else this.store.removeCheckpoint('model-sessions');
+  }
   private retire(h:SessionHandle){this.applied.delete(h.id);this.state.pendingDeletion.push(h);this.save();}
   private async cleanup(){
     if(this.closed)return;
@@ -53,6 +61,7 @@ export class ConversationSessions {
     this.epoch++;if(!source||this.active?.dependencies.includes(source))this.active?.controller.abort();
     const removed=this.state.sessions.filter(s=>!source||s.handle.dependencies.includes(source));
     this.state.sessions=this.state.sessions.filter(s=>!removed.includes(s));for(const s of removed)this.retire(s.handle);
+    if(removed.some(s=>s.key===this.state.current))this.state.current='primary';
     this.save();void this.cleanup();
   }
   clear(){this.invalidate();this.state.current='primary';this.save();}
@@ -79,7 +88,7 @@ export class ConversationSessions {
       const last=messages.at(-1)?.content??'';
       const key=request.private||!this.retain()?'private':request.dependencies.length?'source':sessionRoute(last,this.state.current,this.projects());
       const scope:SessionScope=key.startsWith('project:')?'project':key==='private'?'private':key==='source'?'source':'primary';
-      transient=scope==='private'||scope==='source';
+      transient=scope==='private';
       let saved=transient?undefined:this.state.sessions.find(s=>s.key===key);
       if(saved&&(saved.instructionsHash!==hash(request.instructions)||saved.handle.model!==request.model||saved.handle.turns>=160||(this.retentionDays()>0&&Date.now()-(saved.handle.createdAt??saved.at)>this.retentionDays()*86400000))) {await this.rotate(key);saved=undefined;}
       await this.backend.capabilities();
@@ -97,6 +106,8 @@ export class ConversationSessions {
         if(!transient){this.state.sessions.push({key,handle:h,at:Date.now(),instructionsHash:hash(request.instructions)});while(this.state.sessions.length>this.maxActive){const old=this.state.sessions.shift()!;this.retire(old.handle);}}
       }
       if(controller.signal.aborted||epoch!==this.epoch)throw new ProviderError('Stopped.','aborted');
+      h.dependencies=[...new Set([...h.dependencies,...request.dependencies])];
+      this.active.dependencies=h.dependencies;
       if(!transient){this.state.current=key;this.save();}
       // Native compaction happens only before a new turn, after the prior turn completed.
       if((h.usage?.context??0)>80000&&(this.compacted.get(h.id)??-1)<h.turns-4) {

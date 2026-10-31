@@ -13,7 +13,8 @@ describe('lasting dialogue guide and situated movement',()=>{
   it('uses the cumulative runtime guide in live chat and ambient voice without injecting example replies',()=>{
     expect(CAPRI_DIALOGUE_REGISTER).toContain(CAPRI_DIALOGUE_GUIDE);
     const prompt=buildSystemPrompt(DEFAULT_SETTINGS,[],new Date(),{compact:true,examples:false,userText:'What about this song?'});
-    for(const rule of ['NIGHT CITY VOICE','KNOWLEDGE IS NOT LIVE SENSING','SELF AND VALUES','LASTING PERSONALITY','SITUATED MOMENTS'])expect(prompt).toContain(rule);
+    expect(prompt).toContain(CAPRI_DIALOGUE_GUIDE);
+    for(const rule of ['CAPRI:','COMPANY:','VOICE:','CONTINUITY:','EVIDENCE:','MEDIA:','BODY:'])expect(prompt).toContain(rule);
     expect(prompt).not.toContain('Damn inconvenient thing to want');
     expect(worldContext('I Really Want to Stay at Your House')).toContain('David/Lucy');
     expect(worldContext('Capri source code')).toContain('Do not claim self-modification');

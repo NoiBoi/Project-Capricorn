@@ -6,7 +6,7 @@ This is an independent repository with a fresh Git history. It continues develop
 
 ## Current version
 
-1.4.2 adds optional local activity awareness: noon-to-noon usage days, cautious 7/30-day routine summaries, and occasional relevant context through existing cognition. Enable or clear it under Access & privacy → Activity awareness. Timing collection uses the existing presence tick; idle time never establishes sleep. Existing shared conversation and native window intentions are preserved.
+1.5.3 improves phone-evidence retrieval, source-backed conversation continuity, and relevance of ambient context and shared experiences. Source threads stay ephemeral, permission changes withdraw dependent recall, and unchanged observations can remain silent. See [verification and limitations](docs/RELIABILITY_1_5_3.md).
 
 - Ctrl+Shift+Space opens focused quick chat.
 - Ctrl+C+Space opens long-term chat on the active monitor. Escape dismisses it.

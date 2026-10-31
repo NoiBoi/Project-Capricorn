@@ -54,6 +54,14 @@ export class HistoryStore {
   }
   recent(limit = 50): ChatMessage[] { return this.items.slice(-limit); }
   recallHistory(): ChatMessage[] { return this.items.slice(); }
+  /** Preserve the visible transcript, but permanently withdraw dependent quotes from inference. */
+  invalidateContext(source?:string) {
+    let changed=false;
+    for(const m of this.items)if(m.meta?.contextRecall&&m.meta.contextSources?.some(s=>!source||s===source)){
+      m.meta.contextRecall=false;changed=true;
+    }
+    if(changed)this.rewrite();
+  }
   privacyChanged() {
     if (this.wasEnabled && !this.enabled()) try { fs.rmSync(this.file, { force: true }); } catch { /* session history remains available */ }
     this.wasEnabled = this.enabled();

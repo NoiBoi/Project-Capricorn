@@ -244,13 +244,18 @@ export class BehaviorCore {
     const input = event.kind === 'trigger' ? { kind: event.kind, event: event.event, detail: event.detail, observation: event.observation, context: event.context } : event;
     const s = this.snapshot(),mode=event.kind==='interact'||event.kind==='trigger'&&event.direct?'chat':'proactive',excluded=this.d.excludedContextSources?.(mode)??new Set<string>();
     if(excluded.size){s.facts=[];s.interests=[];s.journal=[];s.interestLives=[];}
+    if(mode==='proactive'){
+      const observation=event.kind==='trigger'?event.observation:event.kind==='observe'?event.observation:undefined;
+      const targets=new Set([observation?.target,...s.interests.map(i=>s.facts.find(f=>f.id===i.sourceId)?.target)].filter(Boolean));
+      s.facts=s.facts.filter(f=>targets.has(f.target));
+    }
     const messages: LLMMessage[] = [{ role: 'system', content: CAPRI_DIALOGUE_REGISTER + '\n' + CAPRI_SCENE_VOICE + '\n' + worldContext(this.query(event)) + '\n' + DECISION_BRIEF +
       this.d.scene.context(event.kind === 'trigger' ? event.event : event.kind,new Set(),excluded) + (this.d.cognition?.context(!excluded.size && !this.privateExchange) ?? '') + (this.d.promptContext?.(event) ?? '') +
       (this.d.continuity?.experienceContext(this.query(event), event.kind === 'trigger' ? event.observation?.process : '', event.kind === 'trigger' && !event.direct) ?? '') },
       { role: 'user', content: JSON.stringify({ event: event.kind === 'trigger' ? event.event : event.kind, input, situation: { facts: s.facts, interests: s.interests, decisions: s.journal.slice(-3) },
-        interestLives: s.interestLives.map(i => ({ topic: i.topic, expired: i.expiresAt <= this.now() })),
+        interestLives: s.interestLives.filter(i=>i.expiresAt>this.now()).map(i => ({ topic: i.topic, expired: false })),
         conversation: { ...this.d.cognition.dialogue.engagement(excluded), purpose: event.kind==='trigger'&&event.event==='personal_followup'?'notice':this.d.cognition.dialogue.engagement(excluded).purpose },
-        delivery: { speechAllowed: this.d.maySpeak?.(event) !== false }, approvedMemories: selectMemories(this.d.memories(), this.query(event)).slice(0,8).map(m => m.text.slice(0, 400)) }) }];
+        delivery: { speechAllowed: this.d.maySpeak?.(event) !== false }, approvedMemories: selectMemories(this.d.memories(), this.query(event),mode==='proactive').slice(0,8).map(m => m.text.slice(0, 400)) }) }];
     if(event.kind==='trigger'&&event.event==='life_context'){const context=event.context as {evidence?:{source?:string};relatedEvidence?:{source?:string}[]}|undefined;for(const e of [context?.evidence,...context?.relatedEvidence??[]])if(e?.source)this.sourceDependencies.add(e.source);}
     for (const source of this.d.contextSources?.() ?? []) this.sourceDependencies.add(source);
     return messages;

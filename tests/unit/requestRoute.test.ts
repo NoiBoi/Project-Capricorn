@@ -1,3 +1,4 @@
+import {selectMemories} from '../../src/main/ai/promptContext';
 import { describe, expect, it } from 'vitest';
 import { needsActions } from '../../src/main/ai/requestRoute';
 import { buildSystemPrompt, PERSONA_CANON, PERSONA_INTERPRETATION, DIALOGUE_EXAMPLES, PERFORMANCE_SCENES } from '../../src/main/ai/persona';
@@ -9,7 +10,7 @@ describe('conversation and action routing', () => {
   it('grounds the live voice in attributed scene analysis and selected acting references', () => {
     const prompt = buildSystemPrompt(DEFAULT_SETTINGS, [], new Date(), { actions: false, examples: false, compact: true, userText: 'Who are you?' });
     expect(prompt).toContain(CAPRI_SCENE_VOICE);
-    expect(prompt).toContain('ordinary conversation'); expect(prompt).not.toContain('ACTING REFERENCES');
+    expect(prompt).toContain('Speak ordinary adult English'); expect(prompt).not.toContain('ACTING REFERENCES');
     expect(prompt).not.toContain('CURRENT EXCHANGE: You have been asked');
     expect(prompt).not.toContain(PERFORMANCE_SCENES.identity[0][1]);
     expect(prompt).not.toContain('find excuses to talk about');
@@ -40,4 +41,11 @@ describe('conversation and action routing', () => {
     expect(full.length - lean.length).toBeGreaterThan(2000);
     expect(buildSystemPrompt(DEFAULT_SETTINGS, memories, date, { actions: true, compact: true })).toContain('use_computer:');
   });
+});
+
+it('keeps ambient memory selection relevant even without a subject, while explicit profile recall stays complete',()=>{
+ const memories=Array.from({length:20},(_,i)=>({id:'m'+i,text:i===0?'The user likes violet oscillators.':'The user likes mushroom recipe '+i,status:'approved' as const,source:'user' as const,createdAt:100-i}));
+ expect(selectMemories(memories,'',true)).toEqual([]);
+ expect(selectMemories(memories,'violet oscillator',true).map(m=>m.id)).toEqual(['m0']);
+ expect(selectMemories(memories,'What do you know about me?')).toHaveLength(20);
 });

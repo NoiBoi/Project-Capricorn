@@ -185,3 +185,29 @@ it('retrieves delivered opinions and omits expired wants while preserving their 
  const context=store.experienceContext('violet oscillator');
  expect(context).toContain('I prefer the violet oscillator.');expect(context).not.toContain('Trace the signal.');expect(context).not.toContain('How do those connections shape the sound?');expect(context).toContain(src.id);
 });
+
+it('retrieves original observed evidence even when its episode title and interpretation are generic',()=>{
+ const s=setup(),store=s.make(),original=source('oscillator','The violet oscillator now has a phase-lock switch.');
+ store.remember({...change(original),topic:'Something changed',interpretation:'A detail is interesting.',question:'What does this switch do?',tags:[]},[original],store.checkpoint(),'Inspect the phase-lock switch.');
+ expect(store.recall('phase-lock oscillator')[0]?.sources[0].text).toBe(original.text);
+ expect(store.recall('mushroom dinner')).toEqual([]);s.advance(49*3600000);
+ const context=store.experienceContext('phase-lock oscillator');expect(context).toContain(original.text);expect(context).not.toContain('Inspect the phase-lock switch.');expect(context).not.toContain('What does this switch do?');
+});
+it('permits historical source dialogue only with explicit current permission filtering',()=>{
+ const history:ChatMessage[]=[{id:'u',role:'user',content:'What is the observatory?',ts:START},{id:'a',role:'assistant',content:'The phone was tentatively near Zinnia Observatory.',ts:START,meta:{contextSources:['owntracks'],contextRecall:true}}];
+ expect(publicHistory(history)).toHaveLength(1);
+ expect(publicHistory(history,new Set())).toHaveLength(2);
+ const recalled=recalledExchanges(history,'observatory',new Set(),3000,new Set());
+ expect(recalled[0].capri).toContain('tentatively');expect(recalled[0].contextSources).toEqual(['owntracks']);
+ expect(JSON.stringify(recalledExchanges(history,'observatory',new Set(),3000,new Set(['owntracks'])))).not.toContain('Zinnia');
+});
+
+
+it('withdraws source quotes permanently across restart while preserving the visible transcript',()=>{
+ const s=setup(),history=new HistoryStore(s.dir,()=>30,()=>true);
+ const message:ChatMessage={id:'source',role:'assistant',content:'Near Zinnia Observatory.',ts:Date.now(),meta:{contextSources:['owntracks'],contextRecall:true}};
+ history.append(message);expect(publicHistory(history.recallHistory(),new Set())).toHaveLength(1);
+ history.invalidateContext('owntracks');const restored=new HistoryStore(s.dir,()=>30,()=>true);
+ expect(restored.recent()[0].content).toBe('Near Zinnia Observatory.');expect(publicHistory(restored.recallHistory(),new Set())).toEqual([]);
+ expect(publicHistory([{...message,meta:{contextSources:['owntracks']}}],new Set())).toEqual([]);
+});

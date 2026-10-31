@@ -62,14 +62,17 @@ it('returns to an established project after a simulated three-day gap and expire
     expect(backend.resumed).toContain(id);expect(backend.starts).toHaveLength(2);expect(cognition.context()).toContain('"questions":[]');expect(cognition.context()).not.toContain('Which design should we inspect?');
   }finally{clock.mockRestore();}
 });
-it('isolates off-record and source turns and never resumes them after restart or revocation',async()=>{
+it('isolates private turns and keeps source continuity in memory only until revocation',async()=>{
   const store=new Store(),backend=new Backend(),manager=new ConversationSessions(backend,store,()=>true,()=>[]);
   await consume(manager.respond(provider,messages('ordinary'),options(),req));
   await consume(manager.respond(provider,messages('private fixture'),options(),{...req,private:true}));
   await consume(manager.respond(provider,messages('source fixture'),options(),{...req,dependencies:['chrome']}));
   await consume(manager.respond(provider,messages('follow-up'),options(),req));
   expect(backend.starts.map(s=>s.scope)).toEqual(['primary','private','source']);
-  expect(manager.snapshot().sessions.map(s=>s.handle.id)).toEqual(['native-1']);
+  expect(manager.snapshot().sessions.map(s=>s.handle.id)).toEqual(['native-1','native-3']);
+  expect(backend.resumed).toContain('native-3');
+  expect(store.load<any>('model-sessions').sessions.map((s:any)=>s.handle.id)).toEqual(['native-1']);
+  manager.invalidate('chrome');expect(manager.snapshot().sessions.map(s=>s.handle.id)).toEqual(['native-1']);
   manager.clear();expect(manager.snapshot().sessions).toEqual([]);
 });
 it('closes questions and saturated thoughts, preserves correction evidence and rejects external invented opinions',()=>{
@@ -122,4 +125,12 @@ it('transports the complete context in bounded native fragments rather than one 
  const fragments=Object.values(nativeContext(state)).map(f=>JSON.parse(f.value));
  expect(fragments.length).toBeGreaterThan(3);expect(fragments.every(f=>f.data.length<=4000)).toBe(true);
  expect(fragments.map(f=>f.data).join('')).toBe(state);
+});
+
+it('unions source dependencies across a continuing ephemeral native conversation and retires on either revocation',async()=>{
+ const backend=new Backend(),store=new Store(),manager=new ConversationSessions(backend,store,()=>true,()=>[]);
+ for(const dependencies of [['owntracks'],[],['chrome'],[]]){await consume(manager.respond(provider,messages('continuing'),options(),{...req,dependencies}));manager.delivered();}
+ expect(backend.starts).toHaveLength(1);expect(manager.snapshot().sessions[0].handle.dependencies.sort()).toEqual(['chrome','owntracks']);
+ expect(store.load<any>('model-sessions').sessions).toEqual([]);
+ manager.invalidate('owntracks');expect(manager.snapshot().sessions).toEqual([]);
 });

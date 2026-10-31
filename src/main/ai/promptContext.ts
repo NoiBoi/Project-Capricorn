@@ -3,11 +3,12 @@ import { identityMemories } from '../../shared/userIdentity';
 import { localRelevance } from '../../shared/recall';
 const tokens = (text: string) => new Set(text.toLowerCase().match(/[a-z]{3,}/g) ?? []);
 /** Filter legacy off-the-record pairs as well as newly flagged private messages, without rewriting history. */
-export function publicHistory(history: ChatMessage[]) {
+export function publicHistory(history: ChatMessage[], excludedSources?: ReadonlySet<string>) {
   let privateTurn = false;
   return history.filter(m => {
     if (m.role === 'user') privateTurn = !!m.meta?.private || /\b(off the record|don['’]?t (?:save|remember) (?:this|anything)|do not (?:save|remember) (?:this|anything))\b/i.test(m.content);
-    return !privateTurn && !m.meta?.private && !m.meta?.contextSources?.length;
+    const sources=m.meta?.contextSources??[];
+    return !privateTurn && !m.meta?.private && (!sources.length || !!excludedSources && m.meta?.contextRecall===true && !sources.some(s=>excludedSources.has(s)));
   });
 }
 const RELATED = [
@@ -23,19 +24,19 @@ const relatedTokens = (text: string) => {
   return set;
 };
 /** Storage stays complete. Select a bounded working set; broad recall explicitly loads the full profile. */
-export function selectMemories(memories: MemoryItem[], query?: string) {
+export function selectMemories(memories: MemoryItem[], query?: string, ambient = false) {
   const seen=new Set<string>();
   const approved = memories.filter(m => m.status === 'approved' && !m.archived).sort((a,b)=>(b.updatedAt??b.createdAt)-(a.updatedAt??a.createdAt)).filter(m=>{
     const key=m.text.toLowerCase().replace(/\s+/g,' ').trim().replace(/[.!?]+$/,'');if(seen.has(key))return false;seen.add(key);return true;
   });
-  if (!query || /\b(?:who am i|what (?:do you )?(?:know|remember) about me|my (?:profile|memories)|everything.*(?:remember|know))\b/i.test(query)) return approved;
-  const q = relatedTokens(query);
+  if (!ambient && (!query || /\b(?:who am i|what (?:do you )?(?:know|remember) about me|my (?:profile|memories)|everything.*(?:remember|know))\b/i.test(query))) return approved;
+  const q = relatedTokens(query??'');
   const ranked = approved.map((m, i) => {
     const overlap = [...tokens(m.text)].filter(t => q.has(t) && !STOP.has(t)).length;
-    const identity = /\b(name|called|student|university|purdue)\b/i.test(m.text) ? 2 : 0;
+    const identity = !ambient && /\b(name|called|student|university|purdue)\b/i.test(m.text) ? 2 : 0;
     return { m, i, score: overlap * 4 + identity };
   }).sort((a, b) => b.score - a.score || a.i - b.i);
-  const selected: MemoryItem[] = identityMemories(approved).filter(m => m.text.length <= 700).slice(0, 3);
+  const selected: MemoryItem[] = ambient?[]:identityMemories(approved).filter(m => m.text.length <= 700).slice(0, 3);
   let chars = selected.reduce((n, m) => n + m.text.length, 0);
   for (const item of ranked) {
     if (selected.includes(item.m)) continue;
@@ -59,8 +60,8 @@ export function recentContext<T extends { role: string; content: string }>(messa
 const STOP = new Set('the and for are was has had can our its not but about after again also been before could did does doing from have just know like more remember said some that them then there these they thing this those told want were what when where which with would your you capri really think hello thanks thank please should okay one now'.split(' '));
 const recallWords = (text: string) => [...tokens(text)].filter(w => !STOP.has(w));
 /** Search saved exchanges locally. Exact quotations keep recalled claims attributable and dated. */
-export function recalledExchanges(history: ChatMessage[], query: string, recentIds: Set<string>, budget = 3000) {
-  history = publicHistory(history);
+export function recalledExchanges(history: ChatMessage[], query: string, recentIds: Set<string>, budget = 3000, excludedSources?:ReadonlySet<string>) {
+  history = publicHistory(history,excludedSources);
   const words = recallWords(query), broad = /\b(?:what (?:did|were) we|where (?:did|were) we|last (?:conversation|time)|talk(?:ed|ing) about|left off)\b/i.test(query);
   const ownWords = /\b(?:you|your|capri)\b/i.test(query);
   const frequency = new Map<string, number>();
@@ -83,12 +84,13 @@ export function recalledExchanges(history: ChatMessage[], query: string, recentI
     if ((matches.length >= 2 && score >= (ownWords ? 2 : 4)) || distinctive || broad || words.length >= 2 && hybrid.concept > 0 && matches.length === 0) pairs.push({ user, reply, score });
   }
   const ranked = pairs.sort((a, b) => b.score - a.score || b.user.ts - a.user.ts);
-  const selected: { at: string; user: string; capri?: string }[] = []; let chars = 0;
+  const selected: { at: string; user: string; capri?: string; contextSources?:string[] }[] = []; let chars = 0;
   for (const pair of ranked) {
     if (selected.length >= 3) break;
     const user = pair.user.content.slice(0, 900), capri = pair.reply?.content.slice(0, 600);
     if (chars + user.length + (capri?.length ?? 0) > budget) continue;
-    selected.push({ at: new Date(pair.user.ts).toISOString(), user, ...(capri ? { capri } : {}) }); chars += user.length + (capri?.length ?? 0);
+    const contextSources=[...new Set([...(pair.user.meta?.contextSources??[]),...(pair.reply?.meta?.contextSources??[])])];
+    selected.push({ at: new Date(pair.user.ts).toISOString(), user, ...(capri ? { capri } : {}),...(contextSources.length?{contextSources}:{}) }); chars += user.length + (capri?.length ?? 0);
   }
   return selected.sort((a, b) => a.at.localeCompare(b.at));
 }

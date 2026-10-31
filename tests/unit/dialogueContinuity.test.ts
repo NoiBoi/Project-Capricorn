@@ -131,6 +131,8 @@ describe('grounded dialogue development', () => {
     expect(sameInterestSubject('fish character labels','character fish labels')).toBe(true);
     expect(sameInterestSubject('fish character labels','circuit wiring layout')).toBe(false);
     const prompt=buildSystemPrompt(DEFAULT_SETTINGS,[],new Date(),{compact:true,examples:false,userText:'What do you want?'});
-    expect(prompt).toContain('LASTING RAPPORT');expect(prompt).toContain('DIALOGUE REGISTER');expect(prompt).toContain('appetite for experience');
+    expect(prompt).toContain('Attributed delivered words establish your expressed views');
+    expect(prompt).toContain('A passing aside needs no answer');
+    expect(prompt).toContain('Have your own tastes, appetite, playful impatience');
   });
 });

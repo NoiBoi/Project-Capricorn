@@ -158,7 +158,15 @@ export class CodexSessions implements PersistentSessions {
   }
   async invalidate(h:SessionHandle):Promise<'deleted'|'invalidated'> {
     this.loaded.delete(h.id);
-    if(!['primary','project'].includes(h.scope)){this.close();return 'invalidated';}
+    if(!['primary','project'].includes(h.scope)){
+      // Ephemeral history belongs to this thread, not the shared stdio backend.
+      // Unsubscribe unloads it without interrupting ordinary conversation threads.
+      if(this.methods.has('thread/unsubscribe')){
+        await this.rpc('thread/unsubscribe',{threadId:h.id});
+        return 'invalidated';
+      }
+      this.close();return 'invalidated';
+    }
     await this.boot();if(!this.methods.has('thread/delete'))return 'invalidated';
     try {await this.rpc('thread/delete',{threadId:h.id});}catch(e){if(!(e instanceof Error)||!/not found|does not exist|no rollout/i.test(e.message))throw e;}
     return 'deleted';

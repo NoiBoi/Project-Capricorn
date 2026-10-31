@@ -25,7 +25,9 @@ export class OwnTracks {
     const words:string[]=text.toLowerCase().match(/[a-z]{3,}/g)??[];
     const named=(name:string)=>name.toLowerCase().match(/[a-z]{3,}/g)?.some(w=>words.includes(w)&&!['the','and','near','general','area'].includes(w));
     const specific=this.state.visits.some(v=>named(v.name))||this.config().places.some(p=>named(p.name));
-    if(!/\b(where (?:am|are|have|was|were|did)|location|whereabouts|phone (?:position|evidence)|(?:go|gone|went|been|visit|visited|gym|home|travel|lately))\b/i.test(text)&&!specific)return '';
+    const whereabouts=/\b(?:where (?:am i|are we|was i|were we|(?:have|had) (?:i|we) been|did (?:i|we) go|(?:is|was) my phone)|(?:my|our|phone|gps) (?:current |recent |last known )?(?:location|position|whereabouts)|(?:current|recent) whereabouts|(?:my|our|recent|retained|phone) visits|(?:am|was|were|are) (?:i|we|my phone) (?:last |recently |still )?(?:at|near|in)\b|(?:did|have|had) (?:i|we) (?:ever |recently )?(?:go|gone|been|visit|visited)\b)/i.test(text);
+    const indirect=/\bwhere (?:do you (?:think|reckon) )?(?:i (?:am|was|went)|i['’]m|we (?:are|were|went))\b/i.test(text);
+    if(!whereabouts&&!indirect&&!(specific&&/\b(?:when|last time|how often|how many times)\b.*\b(?:i|we|my phone)\b/i.test(text)))return '';
     this.interpreter.prune(now);
     const current=/\b(right now|currently|where am i|where are we)\b/i.test(text);
     const visits=[...this.state.visits].filter(v=>!specific||named(v.name)).sort((a,b)=>b.last-a.last);
@@ -34,13 +36,16 @@ export class OwnTracks {
       const corroborated=['confirmed','departed'].includes(v.state)||v.kind!=='beacon'&&v.supportedMs>=(place?.dwellMinutes??(v.kind==='region'?30:15))*60000&&v.observations>=(place?.minObservations??(v.kind==='region'?5:4));
       return {place:v.name,kind:v.kind,since:v.since,lastObserved:v.last,endedAt:v.endedAt,
         status:v.kind==='beacon'?'reported beacon proximity':corroborated?'corroborated phone visit':'tentative phone proximity',current:!v.endedAt&&v.state==='confirmed'&&now-v.last<=300000,
-        supportedMinutes:Math.floor(v.supportedMs/60000),observations:v.observations,reason:v.reason};
+        confidence:v.confidence,supportedMinutes:Math.floor(v.supportedMs/60000),observations:v.observations,reason:v.reason};
     });
     const selected:typeof projected=[];let chars=0;
     for(const v of projected){const size=JSON.stringify(v).length;if(selected.length>=(current?3:6)||chars+size>1800)continue;selected.push(v);chars+=size;}
     const fix=this.state.lastFix;
-    return JSON.stringify({source:'owntracks',retrievedAt:now,lastPhonePosition:fix?{at:fix.at,fresh:now-fix.at<=300000,accuracyMetres:fix.acc}:null,
-      visits:selected,coverage:!selected.length?'No matching retained phone visits. Absence is not proof of not going.':undefined,
+    const proximity=fix?this.state.visits.filter(v=>v.last===fix.at&&!v.endedAt&&['nearby','possible','confirmed'].includes(v.state)).slice(-3).map(v=>({place:v.name,status:v.state==='confirmed'?'corroborated phone proximity':'tentative phone proximity',confidence:v.confidence})):[];
+    const regions=fix&&this.config().location.publicLookup?this.geography.cached(fix).filter(f=>f.kind==='region'&&[4,6,8,10].includes(f.level??0)).sort((a,b)=>(b.level??0)-(a.level??0)):[];
+    const area=regions.map(r=>r.name).filter((n,i,a)=>a.indexOf(n)===i).join(', ').slice(0,150);
+    return JSON.stringify({source:'owntracks',retrievedAt:now,lastPhonePosition:fix?{at:fix.at,fresh:now-fix.at<=300000,accuracyMetres:fix.acc,proximity,...(area?{coarseArea:area,areaMeaning:'Area containing the coarse lookup tile, not exact occupancy'}:{})}:null,
+      visits:[...selected].sort((a,b)=>a.since-b.since),coverage:{retainedDays:Math.min(this.config().location.visitDays,source.retentionDays),matchingVisits:projected.length,omittedVisits:projected.length-selected.length,gaps:'Only listed observations are covered; intervals and unobserved stops are unknown.',...(!selected.length?{note:'No matching retained phone visits. Absence is not proof of not going.'}:{})},
       meaning:'Phone evidence only, not proof the user attended or exercised. Historical visits do not establish current location. Tentative proximity is not a confirmed visit. Unobserved gaps, routes, rooms and floors are unknown. No raw position is supplied.'});
   }
   refreshHealth(now=Date.now()){
@@ -73,7 +78,12 @@ export class OwnTracks {
     if(!fresh){this.state.diagnostic='Delayed historical report ignored for presence and dwell. Waiting for a live report.';this.ledger.setHealth('owntracks',{state:'degraded',detail:this.state.diagnostic,lastSync:this.state.receivedAt||undefined});this.save();return false;}
     const supported=this.interpreter.observe({...p,at},this.config().location.publicLookup?this.geography.cached(p):[],now);
     const generation=this.generation;
-    if(supported&&this.active&&this.config().location.publicLookup&&!this.config().places.some(place=>distance(p,place)<place.radius+500))void this.geography.nearby(p).then(()=>{if(generation!==this.generation||!this.active||!this.ledger.source('owntracks')?.permissions.collect||this.ledger.source('owntracks')?.paused)return;this.save();});
+    if(supported&&this.active&&this.config().location.publicLookup&&!this.config().places.some(place=>distance(p,place)<place.radius+500))void this.geography.nearby(p).then(features=>{
+      const source=this.ledger.source('owntracks'),resolvedAt=Date.now();
+      if(generation!==this.generation||!this.active||!source?.permissions.collect||source.paused||!this.config().location.publicLookup||this.state.lastFix?.at!==at||resolvedAt-at>300000||!features.length)return;
+      // Reclassify this same authenticated fix; it supplies no new independent sample.
+      this.interpreter.observe({...p,at},features,resolvedAt);this.save();
+    });
     this.ledger.setHealth('owntracks',{state:supported?'healthy':'degraded',detail:this.state.diagnostic,lastSync:supported?now:this.state.receivedAt||undefined});this.save();return supported;
   }
 
