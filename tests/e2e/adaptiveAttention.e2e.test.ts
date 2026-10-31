@@ -15,14 +15,14 @@ afterEach(async()=>{await closeIsolatedApp(app);app=undefined;server?.closeAllCo
     try{fs.rmSync(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100});}catch(error){if(!['EBUSY','EPERM','ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code??''))throw error;}
   }
 });
-async function boot(options:{active?:boolean;delay?:number;interested?:boolean}={}) {
+async function boot(options:{active?:boolean;delay?:number;interested?:boolean;appraisal?:Record<string,string>}={}) {
   const requests:any[]=[];
   server=http.createServer((req,res)=>{
     if(req.url?.endsWith('/models')){res.end(JSON.stringify({data:[{id:'fixture'}]}));return;}
     let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
       const body=JSON.parse(raw), content=body.messages.at(-1).content;
       const payload=JSON.parse(Array.isArray(content)?content.find((p:any)=>p.type==='text').text:content);requests.push(payload);
-      const text=JSON.stringify({interpretation:'A branch extends beyond the enclosure.',interest:options.interested&&payload.event==='inspect'?{topic:'the branch',intention:'Offer a view on the branch when the conversation has room.',sourceId:payload.input.observation.id,quote:payload.input.observation.detail}:null,action:'speak',line:payload.event==='roam' ? 'I am keeping this spot. You can negotiate later.' : 'That branch leaves the enclosure. I wonder whether that boundary is meant to contain it.',gesture:'curious',reason:'A specific new visible detail.',facts:['A branch extends beyond the enclosure.'],curiosity:'Is the boundary meant to contain the branch?',points:[{x:.5,y:.5,label:'branch'}]});
+      const text=JSON.stringify({interpretation:'A branch extends beyond the enclosure.',interest:options.interested&&payload.event==='inspect'?{topic:'the branch',intention:'Offer a view on the branch when the conversation has room.',sourceId:payload.input.observation.id,quote:payload.input.observation.detail}:null,action:'speak',expression:options.appraisal??{contribution:'personal',timing:'opening',development:'new',physicalClaim:'none'},line:payload.event==='roam' ? 'I am keeping this spot. You can negotiate later.' : 'That branch leaves the enclosure. I wonder whether that boundary is meant to contain it.',gesture:'curious',reason:'A specific new visible detail.',facts:['A branch extends beyond the enclosure.'],curiosity:'Is the boundary meant to contain the branch?',points:[{x:.5,y:.5,label:'branch'}]});
       setTimeout(()=>{if(!res.destroyed){res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{delta:{content:text}}]})+'\n\ndata: [DONE]\n\n');}},options.delay??5);
     });
   });
@@ -37,6 +37,16 @@ async function boot(options:{active?:boolean;delay?:number;interested?:boolean}=
   return {a:app,char,requests};
 }
 describe('adaptive desktop attention',()=>{
+  it.each(['report','none'] as const)('retains inspection without delivering an unearned %s',async contribution=>{
+    const {a,requests}=await boot({appraisal:{contribution,timing:'opening',development:'new',physicalClaim:'none'}});
+    const result=await a.evaluate(async()=>{const a=(globalThis as any).__capri;const decision=await a.generatedRemark('inspect','An incidental work observation.',{target:777n});return {decision,points:a.lastInspection?.points.length,spoken:a.scenes.recent().filter((s:any)=>s.kind==='said').length};});
+    expect(requests).toHaveLength(1);expect(result.decision).toMatchObject({action:'defer',line:'',delivered:false});expect(result.points).toBe(1);expect(result.spoken).toBe(0);
+  });
+  it('rejects an arrival claim before any completed native arrival',async()=>{
+    const {a}=await boot({appraisal:{contribution:'personal',timing:'opening',development:'new',physicalClaim:'arrival'}});
+    const result=await a.evaluate(async()=>{const a=(globalThis as any).__capri;return a.generatedRemark('inspect','A visible target is not an arrival receipt.',{target:777n});});
+    expect(result).toMatchObject({action:'defer',line:'',delivered:false});expect(result.reason).toContain('receipt');
+  });
   it('does not cancel a direct contextual interaction on an unrelated settings write with desktop context off',async()=>{
     const {a,requests}=await boot({delay:500});
     await a.evaluate(()=>{const g=globalThis as any,a=g.__capri;a.settings.update({dialogue:{localContext:false}});a.conversationScene.record({id:'route',role:'user',text:'We are discussing a branch outside an enclosure.',at:Date.now(),event:'chat'});g.__pending=a.generatedRemark('pat');});

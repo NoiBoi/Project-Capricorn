@@ -19,7 +19,7 @@ function companionRequest(body: any) {
 function visualDecision(value: { line: string; facts?: string[]; interpretation?: string; curiosity?: string; points?: unknown[] }) {
   const quiet = value.line === '<quiet/>';
   return { ...value, line: quiet ? '' : value.line, interpretation: value.interpretation || 'A tentative reading of the exposed crop.',
-    interest: null, action: quiet ? 'silent' : 'speak', gesture: 'none', reason: 'A single grounded visual decision.' };
+    interest: null, action: quiet ? 'silent' : 'speak', expression:{contribution:'personal',timing:'opening',development:'new',physicalClaim:'none'}, gesture: 'none', reason: 'A single grounded visual decision.' };
 }
 const EXE = process.env.CAPRI_EXE; // set to test a packaged build instead of the dev bundle
 const apps: ElectronApplication[] = [];
@@ -2490,7 +2490,7 @@ describe('contextual companion interactions', () => {
   });
   it('marks an episodic question asked only when unified-core voice-only audio completes', async () => {
     const mock = await mockModel(() => JSON.stringify({ interpretation: 'Continue the earlier connection interest.', interest: null,
-      action: 'speak', line: 'How do those branching connections route the signal?', gesture: 'none', reason: 'A relevant follow-up.' }));
+      action:'speak',expression:{contribution:'personal',timing:'opening',development:'new',physicalClaim:'none'},line: 'How do those branching connections route the signal?', gesture: 'none', reason: 'A relevant follow-up.' }));
     try {
       const { app, char } = await launch(openaiProfile(mock.url, { character: { speechBubbles: false }, memory: { autoLearn: true }, voice: { ttsEnabled: true }, behavior: { quietHours: { enabled: false } } }));
       await char.evaluate(() => { const w = window as any; w.__receiptIds = []; w.__capriDebug.speaker.enqueue = (id: string) => w.__receiptIds.push(id); });

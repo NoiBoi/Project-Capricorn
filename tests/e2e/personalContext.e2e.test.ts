@@ -20,7 +20,7 @@ async function fixture(followUpDelay = 0) {
       const body = JSON.parse(raw); requests.push(body);
       const system = body.messages[0].content;
       const text = system.includes('Choose one desktop-companion decision')
-        ? JSON.stringify({ interpretation:'Use the sourced current subject and eligible opportunity.', interest:null, action:'speak', line:system.includes('"title":"ArborCalc"') ? 'Any news on the comparison?' : "Weren't you going to bed after that?", gesture:'nod', reason:'One grounded callback to the eligible user intention.' })
+        ? JSON.stringify({ interpretation:'Use the sourced current subject and eligible opportunity.', interest:null, action:'speak',expression:{contribution:'personal',timing:'opening',development:'new',physicalClaim:'none'},line:system.includes('"title":"ArborCalc"') ? 'Any news on the comparison?' : "Weren't you going to bed after that?", gesture:'nod', reason:'One grounded callback to the eligible user intention.' })
         : system.includes('Extract durable personal memory') ? JSON.stringify({changes:[],situations:[],commitments:[]}) : 'Fine. Get some rest.';
       setTimeout(() => { if (res.destroyed) return; res.writeHead(200,{'content-type':'text/event-stream'});
         res.end('data: '+JSON.stringify({choices:[{delta:{content:text}}]})+'\n\ndata: [DONE]\n\n');

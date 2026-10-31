@@ -17,7 +17,7 @@ it.skipIf(process.env.CAPRI_REAL_HONCHO !== '1')('uses real local Honcho derivat
   server = http.createServer((req,res) => {
     if (req.url?.endsWith('/models')) { res.end('{"data":[{"id":"fixture"}]}'); return; }
     let raw = ''; req.on('data', c => raw += c); req.on('end', () => { const body = JSON.parse(raw); requests.push(body);
-      const text = body.messages[0].content.includes('Choose one desktop-companion decision') ? JSON.stringify({interpretation:'Connect the supplied memory to this exchange.',interest:null,action:'speak',line:'That report deadline is still Friday.',gesture:'nod',reason:'Use actual supplied fixture context.'}) : 'Fixture acknowledged.';
+      const text = body.messages[0].content.includes('Choose one desktop-companion decision') ? JSON.stringify({interpretation:'Connect the supplied memory to this exchange.',interest:null,action:'speak',expression:{contribution:'personal',timing:'opening',development:'new',physicalClaim:'none'},line:'That report deadline is still Friday.',gesture:'nod',reason:'Use actual supplied fixture context.'}) : 'Fixture acknowledged.';
       res.writeHead(200, {'content-type':'text/event-stream'}); res.end('data: '+JSON.stringify({choices:[{delta:{content:text}}]})+'\n\ndata: [DONE]\n\n');
     });
   });

@@ -16,7 +16,7 @@ it('supplies the same actual body and dated topic history to chat and physical r
     let raw='';req.on('data',c=>raw+=c);req.on('end',()=>{
       const body=JSON.parse(raw);requests.push(body);
       const content=body.messages.at(-1).content;
-      const line=typeof content==='string'&&content.includes('"event":"pat"')?JSON.stringify({interpretation:'Contact during the baseline discussion.',interest:null,action:'speak',line:'Mm. I still vote for the narrow baseline.',gesture:'nod',reason:'A familiar reaction to contact.'}):'The narrower baseline is still my choice.';
+      const line=typeof content==='string'&&content.includes('"event":"pat"')?JSON.stringify({interpretation:'Contact during the baseline discussion.',interest:null,action:'speak',expression:{contribution:'personal',timing:'opening',development:'new',physicalClaim:'none'},line:'Mm. I still vote for the narrow baseline.',gesture:'nod',reason:'A familiar reaction to contact.'}):'The narrower baseline is still my choice.';
       res.writeHead(200,{'content-type':'text/event-stream'});res.end('data: '+JSON.stringify({choices:[{delta:{content:line}}]})+'\n\ndata: [DONE]\n\n');
     });
   });

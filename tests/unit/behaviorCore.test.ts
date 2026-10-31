@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { BehaviorCore, type Decision, type Expression, type Trigger } from '../../scripts/behaviorHarness';
 import { ConversationScene } from '../../src/main/store/conversationScene';
+import { CompanionScenes } from '../../src/main/store/companionScenes';
 import { fact, hold, ask, START } from '../../src/main/behaviorExperiment/scenarios';
 import type { LLMProvider } from '../../src/main/ai/providers';
 const dirs: string[] = [];
@@ -25,6 +26,52 @@ function setup() {
     noPersistence() { persistent = false; }, fail() { fail = true; } };
 }
 describe('integrated behavioral decision lifecycle', () => {
+  it('blocks an unchanged declarative curiosity but permits meaningful development',async()=>{
+    const s=setup(), continuity=new CompanionScenes(s.dir,()=>true,()=>30,()=>START);
+    const f=fact();
+    continuity.remember({topic:'violet swatch',sourceId:f.id,evidence:f.detail,interpretation:'The violet contrasts with green.',question:'Why the violet swatch?'},
+      [{id:f.id,at:START,role:'observation',text:f.detail,reliability:'visual-interpretation',process:f.process}],continuity.checkpoint(),'Why the violet swatch?',
+      {id:'said',at:START,role:'assistant',text:'I want to understand the violet swatch.',reliability:'delivered'});
+    const core=new BehaviorCore({directory:s.dir,scene:s.scene,provider:s.provider,memories:()=>[],now:()=>START,continuity,
+      attention:()=>({engaged:false,opportunity:'transition'}),express:()=>true});
+    const expression={contribution:'personal',timing:'opening',development:'unchanged',physicalClaim:'none'};
+    s.answer({...hold,interest:null,action:'speak',line:'Still curious about the violet swatch.',expression});
+    const event={...s.trigger('roam'),direct:false,budgetReserved:true};
+    expect(await core.dispatch(event)).toMatchObject({action:'defer',line:'',delivered:false});
+    s.answer({...hold,interest:null,action:'speak',line:'The violet swatch changed with the lighting.',expression:{...expression,development:'changed'}});
+    expect(await core.dispatch(event)).toMatchObject({action:'speak',delivered:true});
+  });
+  it('separates a contribution from timing, preserves investigation, and admits an engaged response', async () => {
+    const s=setup(); let engaged=false, opportunity='occupied';
+    const core=new BehaviorCore({directory:s.dir,scene:s.scene,provider:s.provider,memories:()=>[],now:()=>START,
+      attention:()=>({engaged,opportunity}),express:e=>{s.expressions.push(e);return true;}});
+    const expression={contribution:'personal',timing:'opening',development:'new',physicalClaim:'none'};
+    const event={...s.trigger('song'),direct:false,budgetReserved:true};
+    s.answer({...hold,action:'speak',line:'I like the rough one.',expression});
+    expect(await core.dispatch(event)).toMatchObject({action:'defer',line:'',delivered:false});
+    expect(core.pending()).toBe(true);
+    opportunity='transition';
+    expect(await core.dispatch(event)).toMatchObject({action:'speak',delivered:true});
+    opportunity='occupied';
+    s.answer({...hold,action:'investigate',gesture:'curious',expression});
+    expect(await core.dispatch(event)).toMatchObject({action:'investigate',delivered:true});
+    s.answer({...hold,action:'speak',line:'That does look wrong.',expression:{...expression,contribution:'report'}});
+    expect(await core.dispatch(event)).toMatchObject({action:'defer',delivered:false});
+    engaged=true;
+    s.answer({...hold,action:'speak',line:'The rough one. Keep it.',expression:{...expression,contribution:'response',timing:'engaged'}});
+    expect(await core.dispatch(event)).toMatchObject({action:'speak',delivered:true});
+  });
+  it('fails closed for absent appraisals on host-attended speech and checks completed physical claims',async()=>{
+    const s=setup();let receipt=false;
+    const core=new BehaviorCore({directory:s.dir,scene:s.scene,provider:s.provider,memories:()=>[],now:()=>START,
+      attention:()=>({engaged:false,opportunity:'transition'}),physicalClaimAllowed:()=>receipt,express:()=>true});
+    const event={...s.trigger('roam'),direct:false,budgetReserved:true};
+    s.answer({...hold,action:'speak',line:'I made it over here.'});
+    expect(await core.dispatch(event)).toMatchObject({action:'defer',delivered:false});
+    s.answer({...hold,action:'speak',line:'I made it over here.',expression:{contribution:'personal',timing:'opening',development:'new',physicalClaim:'arrival'}});
+    expect(await core.dispatch(event)).toMatchObject({action:'defer',delivered:false});
+    receipt=true;expect(await core.dispatch(event)).toMatchObject({action:'speak',delivered:true});
+  });
   it('saturates one semantic observation across changed capture hashes and restarts, and reopens on a content revision',async()=>{
     const s=setup();let core=s.make();const first={...s.trigger(),direct:false,context:{perceptionFingerprint:'content-v1'}};
     await core.dispatch(first);expect(s.calls).toBe(1);s.advance(60000);

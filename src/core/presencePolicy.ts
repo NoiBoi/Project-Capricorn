@@ -36,11 +36,20 @@ export class PresencePolicy {
   private lastCue = '';
   private revision = 0;
   private autoAt = 0;
+  private focusKey = '';
+  private focusSince = 0;
+  private speechOpportunity: 'occupied' | 'transition' | 'available' = 'available';
+  attention(engaged = false) { return { engaged, opportunity: engaged ? 'engaged' as const : this.speechOpportunity }; }
   constructor(private now = () => Date.now()) { this.visits = new DesktopVisits(now()); }
   teleportStatus(ready:boolean) {return {nextAt:this.autoAt,ready:ready&&this.autoAt>0};}
   resetTeleport() { this.autoAt = 0; }
-  clear() { this.curiosity.clear(); this.visits.clear(this.now()); this.returns.cancel(); this.lastCue = this.lastMusic = ''; }
+  clear() { this.curiosity.clear(); this.visits.clear(this.now()); this.returns.cancel(); this.lastCue = this.lastMusic = ''; this.focusKey=''; this.focusSince=0; this.speechOpportunity='available'; }
   sample(s: PresenceSample, ready: boolean): Opportunity[] {
+    const key = s.active?.key ?? '';
+    if (key !== this.focusKey) { this.focusKey = key; this.focusSince = s.at; }
+    // Describe observed input/focus, never infer a task, mood or invitation.
+    this.speechOpportunity = s.idleSec >= 3 && s.idleSec < 120 ? 'transition'
+      : key && s.idleSec < 3 && s.at - this.focusSince >= 20000 ? 'occupied' : 'available';
     const result: Opportunity[] = [], blocked = !ready || s.busy;
     const add = (event: string, action: Opportunity['action'], subject: string, priority: number, target?: string, detail?: string, revision = 1) => result.push({ id: `${event}:${subject}`, subject: `${event}:${subject}`, revision, source: 'desktop', at: s.at, expiresAt: s.at + (action === 'reason' ? 90000 : 8000), priority, event, action, target, detail });
     const changes = this.curiosity.syncWindows(s.enabled.context ? s.windows : [], s.at);

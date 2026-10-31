@@ -27,6 +27,16 @@ function fixture(){
 }
 
 describe('authoritative cognitive event sequences, real SQLite and XState',()=>{
+  it('reports input opportunity independently from social engagement and retains movement offers',()=>{
+    const f=fixture(), active={id:'editor',key:'document',title:'An ordinary document'};
+    f.runtime.presence.sample({...f.sample(),active},true);
+    f.advance(30000);f.runtime.presence.sample({...f.sample(),active},true);
+    expect(f.runtime.presence.attention()).toEqual({engaged:false,opportunity:'occupied'});
+    f.runtime.presence.sample({...f.sample(),active,idleSec:6},true);
+    expect(f.runtime.presence.attention()).toEqual({engaged:false,opportunity:'transition'});
+    expect(f.runtime.presence.attention(true)).toEqual({engaged:true,opportunity:'engaged'});
+    f.runtime.presence.clear();expect(f.runtime.presence.attention().opportunity).toBe('available');
+  });
   it('discards stale motion offers and resets automatic movement after user interaction',()=>{
     const f=fixture();f.runtime.offer({...f.opportunity('auto'),event:'native-auto',action:'move'});f.runtime.offer(f.opportunity('document'));
     f.runtime.preempt('pat',0);

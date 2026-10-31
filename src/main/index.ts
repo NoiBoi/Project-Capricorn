@@ -486,6 +486,7 @@ let fullscreenHidden = false;
 let interactUntil = 0;
 let lastFps = 0;
 let lastPoseRenderer: import('../shared/developer').PoseRendererState | null = null;
+let lastCompletedArrival: { target: string; at: number } | null = null;
 let recording = false;
 let quitting = false;
 let charRestarts: number[] = [];
@@ -599,6 +600,16 @@ async function init() {
     persistent: () => settings.get().memory.enabled && settings.get().privacy.saveHistory && !ambientSourceContext(),
     cognition: cognitiveRuntime, budget: backgroundBudget, hostRecordsScene: true, continuity: scenes, relationship, allowLearning: () => settings.get().memory.autoLearn && !ambientSourceContext(), allowed: behaviorAllowed, express: expressBehavior,
     initiativeGapMs: () => DIALOGUE_ACTIVITY[settings.get().dialogue.activityLevel].gapMs,
+    attention: event => cognitiveRuntime.presence.attention(cognitiveRuntime.dialogueEngaged() || event.kind==='interact'
+      || event.kind==='trigger'&&['pat','poke','putdown','placed_window'].includes(event.event)),
+    physicalClaimAllowed: (claim,event) => {
+      const trigger=event.kind==='trigger'?event:undefined;
+      const target=trigger?.observation?.target;
+      if(claim==='inspection')return !!target&&!!environmentalCuriosity.readAt(explorationKey(observedWindow(BigInt(target))));
+      if(drag.active||teleporter?.active||throwTimer||fallTimer||tourRunning)return false;
+      if(claim==='rest')return !!lastPoseRenderer?.pose&&['sit_closed','recline'].includes(lastPoseRenderer.pose)&&currentPoseSupport.kind!=='none';
+      return !!target&&String(perchHandle??lowerAnchor?.handle??'')===target&&lastCompletedArrival?.target===target&&Date.now()-lastCompletedArrival.at<60000;
+    },
     maySpeak: event => {
       // Every event can earn speech. Direct contact has priority; unsolicited speech shares the normal restraint.
       return cognitiveRuntime.mayPresent({direct:event.kind==='interact'||event.kind==='trigger'&&event.direct,composer:bubble.state.composer,pendingAudio:pendingSpokenRemarks.size,waitSeconds:companionDialogue.proactiveWaitSeconds()});
@@ -731,6 +742,7 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
       } else { detachPerch(); attentionHandle = pendingPerch?.handle ?? null; }
       savePosition();
       sendSurface();
+      lastCompletedArrival = perchHandle ? { target:String(perchHandle), at:Date.now() } : null;
       if (!curiosityActive) rememberScene('action', perchHandle ? 'Finished moving to a window perch.' : tourRunning ? 'Finished floating to another part of the window being explored.' : 'Finished moving to a desktop spot.', dest.kind === 'perch' ? 'window' : 'desktop');
       raiseCharacter(); // Perch attachment can change bounds after the initial native move.
         if (trailFrom && settings.get().teleport.effects && (!TEST || process.env.CAPRI_TRAIL_TEST === '1')) {
@@ -916,6 +928,8 @@ function settleAfterDrop() {
     nextWindowVisit = Math.max(nextWindowVisit, loungeUntil);
   }
   rememberScene('action', lowerLedge() ? 'Was placed on a lower ledge to lounge, alternating lying and sitting.' : perchHandle ? 'Was placed on a window perch by the user.' : 'Was placed on the desktop by the user.', perchHandle ? dialogueSurface(observedWindow(perchHandle)) : 'desktop');
+  const arrivedTarget=perchHandle??lowerAnchor?.handle;
+  lastCompletedArrival=arrivedTarget?{target:String(arrivedTarget),at:Date.now()}:null;
   const face = { x: b.x + b.width * characterHead.x, y: b.y + b.height * characterHead.y };
   const under = windowsForPlacement().find(w => face.x >= w.rect.x && face.x <= w.rect.x + w.rect.width && face.y >= w.rect.y && face.y <= w.rect.y + w.rect.height
     && !blockersFor(w.handle).some(r => face.x >= r.x && face.x <= r.x + r.width && face.y >= r.y && face.y <= r.y + r.height));
@@ -2585,6 +2599,7 @@ async function exploreTick(idleSec: number, developerSignal?: AbortSignal, trial
       if(lowerFinish){lowerAnchor={handle:w.handle,fraction:rest.fraction};attentionHandle=w.handle;loungeUntil=Date.now()+(5+Math.random()*10)*60000;sendSurface(true);}
     }
     perchPinned = false; tourStage = 'resting'; cue({ type: 'activity', kind: hoverFinish ? 'float' : 'settle' });
+    lastCompletedArrival = !hoverFinish ? { target:String(w.handle), at:Date.now() } : null;
     rememberScene('action', lowerFinish?'Chose the lower edge of this window to lie down and watch from there.':hoverFinish ? 'Finished a brief floating visit; staying beside the subject for a while.' : 'Finished investigating and chose an exposed ledge to settle on.', dialogueSurface(observedWindow(w.handle)));
     if(inspectAfterLanding&&!developerSignal&&s.dialogue.localContext&&s.behavior.idleRemarks&&s.voice.interactionLines){
       // Let the renderer confirm its supported rest pose before a grounded speech checkpoint.

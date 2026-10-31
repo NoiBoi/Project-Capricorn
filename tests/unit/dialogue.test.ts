@@ -5,6 +5,13 @@ import { WeatherContext } from '../../src/main/dialogueContext';
 
 const random = () => { let s = 48271; return () => ((s = s * 16807 % 2147483647) - 1) / 2147483646; };
 describe('procedural character dialogue', () => {
+  it('preserves paired title quotes while removing a whole-utterance wrapper', () => {
+    for(const line of ['"Glass Sea" is staying on.', '“Glass Sea” is staying on.', 'I vote for “Glass Sea”.', 'Play "Glass Sea"'])
+      expect(cleanGeneratedDialogue(line)).toBe(line);
+    expect(cleanGeneratedDialogue('"Leave that one on."')).toBe('Leave that one on.');
+    expect(cleanGeneratedDialogue('“Leave that one on.”')).toBe('Leave that one on.');
+    expect(cleanGeneratedDialogue('“Play “Glass Sea” again.”')).toBe('“Play “Glass Sea” again.”');
+  });
   it('paces delivered spontaneous speech independently of observations and keeps near-duplicate lines out', () => {
     let now=1000000; const d=new DialogueDirector(()=>.5,()=>now);
     expect(d.proactiveWaitSeconds()).toBe(0);

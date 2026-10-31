@@ -23,7 +23,7 @@ async function model() {
         const content=body.messages.at(-1).content;
         const input=JSON.parse(Array.isArray(content)?content.find((p:any)=>p.type==='text').text:content), source=input.input.observation;
         const known=body.messages[0].content.includes('SHARED EXPERIENCES')||!source;
-        text=JSON.stringify(known ? { interpretation:'The earlier branching graph makes this visit familiar.',interest:null,action:'speak',line:'I recognize this corner. Those branching connections caught my eye.',gesture:'curious',reason:'Recognize the earlier experience without repeating its question.' }
+        text=JSON.stringify(known ? { interpretation:'The earlier branching graph makes this visit familiar.',interest:null,action:'speak',expression:{contribution:'personal',timing:'opening',development:'new',physicalClaim:'none'},line:'I recognize this corner. Those branching connections caught my eye.',gesture:'curious',reason:'Recognize the earlier experience without repeating its question.' }
           : { interpretation:'The routing looks worth understanding later.',interest:{topic:'node wiring',intention:'Understand how the connections route signals.',sourceId:source.id,quote:source.detail},action:'defer',line:'',gesture:'none',reason:'Keep a grounded curiosity without interrupting.',
             ...(Array.isArray(content)?{facts:['A green connection ends outside its enclosure.'],curiosity:'Where does the outside connection lead?',points:[{x:.5,y:.4,label:'outside connection'}]}:{}) });
       } else if (body.messages[0].content.includes('Extract durable personal memory')) text=JSON.stringify({changes:[],tastes:[],threads:[],episodes:[]});

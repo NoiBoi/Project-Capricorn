@@ -31,6 +31,9 @@ export const DecisionSchema = z.object({ interpretation: Text, interest: z.objec
   action: z.enum(['silent', 'defer', 'gesture', 'investigate', 'speak']),
   line: z.string().max(350), gesture: z.enum(['none', 'curious', 'nod']), reason: Text,
   interestDisposition: z.enum(['retain', 'replace', 'clear']).optional(),
+  expression: z.object({ contribution: z.enum(['none','report','personal','discovery','response','important']),
+    timing: z.enum(['wait','opening','engaged','urgent']), development: z.enum(['unchanged','new','changed']),
+    physicalClaim: z.enum(['none','arrival','inspection','rest']) }).strict().optional(),
   experience: z.object({ id: z.string().max(100).optional(), topic: z.string().min(1).max(100), sourceId: z.string().max(100), evidence: z.string().min(3).max(400), interpretation: Text,
     question: z.string().max(240).optional(), tags: z.array(z.string().max(40)).max(6).optional(), status: z.enum(['current','resolved']).optional() }).optional(),
   resolveExperience: z.string().max(100).optional(),
@@ -73,6 +76,8 @@ export interface CoreDeps {
   express: (expression: Expression, event: BehaviorEvent) => boolean;
   allowed?: (event?: BehaviorEvent) => boolean; persistent?: () => boolean; budget?: BackgroundBudget;
   maySpeak?: (event: BehaviorEvent) => boolean;
+  attention?: (event: BehaviorEvent) => { engaged: boolean; opportunity: string };
+  physicalClaimAllowed?: (claim: 'arrival'|'inspection'|'rest', event: BehaviorEvent) => boolean;
   initiativeGapMs?: () => number;
   /** Production host records through its existing delivered-scene path, avoiding duplicate entries. */
   contextSources?: () => string[];
@@ -97,6 +102,10 @@ A fact is evidence; an interpretation or interest is a revisable possibility, ne
 An interest must cite an exact quote from a supplied fact's detail and its sourceId. Keep it only when still relevant.
 Null interest retains existing interests. Latest user statements outrank all tentative interests.
 New interesting evidence can create an interest without speech. Defer to a later opportunity when busy.
+Return expression:{contribution:none|report|personal|discovery|response|important,timing:wait|opening|engaged|urgent,development:unchanged|new|changed,physicalClaim:none|arrival|inspection|rest}.
+Appraise independently of your proposed line: noticing is not having a contribution, and a contribution is not permission to interrupt now. report means a summary, technical assessment or description without a personal stake. personal means a real preference, playful objection or association; discovery means something meaningfully worth sharing, not just a new screenshot. response requires actual user participation, never highlighting, scrolling, copying or text addressed to another AI. important requires a sourced consequential need, not ordinary curiosity.
+Host attention describes input and focus, not intent. During occupied work, keep ordinary personal thoughts for an opening; only an important timely need warrants interruption. At an opening you may express a spontaneous personal thought without an invitation. Routine work and incidental ambiguous call imagery usually warrant silence, investigation or a gesture, not a report. New tracks are observations, not a queue of reviews. Unchanged evidence does not develop an already expressed curiosity, even if rephrased without a question mark. Genuine engagement may deepen a subject without new external evidence.
+Mark physicalClaim when your line claims completed arrival, inspection or rest. A wish or intention is not a completed action. Speech never executes movement; use investigate for a closer look, including silently. Missing completed receipts mean no completed-action claim.
 Silence is a complete decision. Repeated evidence is not a reason to repeat a remark. An important deferred request can merit one concise notice when the user becomes available; do not hide it merely because it arrived during an earlier quiet period. Already addressed or irrelevant requests stay closed.
 For a personal_followup, respond to the sourced user situation or eligible intention, without narrating your current pose or physical surroundings. A routine pose change does not alter that conversational subject.
 The conversational purpose is context, not an obligation to speak. An ignored aside or opening needs no follow-up. A new detail may warrant a fresh thought. For screenshots, put literal descriptions in facts; any speech is your reaction rather than reading those facts aloud.
@@ -255,7 +264,7 @@ export class BehaviorCore {
       { role: 'user', content: JSON.stringify({ event: event.kind === 'trigger' ? event.event : event.kind, input, situation: { facts: s.facts, interests: s.interests, decisions: s.journal.slice(-3) },
         interestLives: s.interestLives.filter(i=>i.expiresAt>this.now()).map(i => ({ topic: i.topic, expired: false })),
         conversation: { ...this.d.cognition.dialogue.engagement(excluded), purpose: event.kind==='trigger'&&event.event==='personal_followup'?'notice':this.d.cognition.dialogue.engagement(excluded).purpose },
-        delivery: { speechAllowed: this.d.maySpeak?.(event) !== false }, approvedMemories: selectMemories(this.d.memories(), this.query(event),mode==='proactive').slice(0,8).map(m => m.text.slice(0, 400)) }) }];
+        delivery: { speechAllowed: this.d.maySpeak?.(event) !== false, attention: this.d.attention?.(event) }, approvedMemories: selectMemories(this.d.memories(), this.query(event),mode==='proactive').slice(0,8).map(m => m.text.slice(0, 400)) }) }];
     if(event.kind==='trigger'&&event.event==='life_context'){const context=event.context as {evidence?:{source?:string};relatedEvidence?:{source?:string}[]}|undefined;for(const e of [context?.evidence,...context?.relatedEvidence??[]])if(e?.source)this.sourceDependencies.add(e.source);}
     for (const source of this.d.contextSources?.() ?? []) this.sourceDependencies.add(source);
     return messages;
@@ -339,6 +348,7 @@ export class BehaviorCore {
           raw += chunk; if (raw.length > 8000) throw new Error('oversized decision');
         }
       })()]);
+      this.d.trace?.('model-output',{revision,raw});
       const revalidated = event.kind !== 'trigger' || !event.revalidate || await event.revalidate();
       if (ctrl.signal.aborted && timedOut) throw new Error('decision deadline');
       if (revision !== this.revision || ctrl.signal.aborted || sceneRevision !== this.d.scene.snapshot().revision)
@@ -361,6 +371,18 @@ export class BehaviorCore {
       let line = decision.action === 'speak' ? cleanGeneratedDialogue(decision.line) : '';
       if (decision.action === 'speak' && (!line || /[<>]/.test(decision.line) || line.split(/\s+/).length > 50)) throw new Error('invalid speech');
       if (decision.action !== 'speak' && decision.line.trim()) throw new Error('speech attached to non-speech action');
+      const autonomous = event.kind === 'trigger' && !event.direct;
+      const attention = this.d.attention?.(event) ?? (event.kind === 'trigger' ? (event.context as {attention?:{engaged?:boolean;opportunity?:string}}|undefined)?.attention : undefined);
+      const appraisal = decision.expression;
+      const unearnedSpeech = autonomous && attention && (!appraisal || appraisal.contribution === 'none' || appraisal.contribution === 'report'
+        || appraisal.timing === 'wait'
+        || appraisal.contribution === 'response' && !attention.engaged
+        || appraisal.timing === 'engaged' && !attention.engaged
+        || attention.opportunity === 'occupied' && !attention.engaged && !(appraisal.contribution === 'important' && appraisal.timing === 'urgent'));
+      const unsupportedBody = appraisal && appraisal.physicalClaim !== 'none' && this.d.physicalClaimAllowed?.(appraisal.physicalClaim,event) !== true;
+      if (decision.action === 'speak' && (unearnedSpeech || unsupportedBody)) {
+        decision = { ...decision, action: 'defer', line: '', gesture: 'none', reason: unsupportedBody ? 'Completed physical claim lacks a current receipt.' : 'Observation retained; contribution or interruption is not warranted.' }; line = '';
+      }
       if (decision.action === 'speak' && this.d.maySpeak?.(event) === false) {
         decision = { ...decision, action: 'gesture', line: '', gesture: decision.gesture === 'none' ? 'curious' : decision.gesture, reason: ('Nonverbal attention; speech is not appropriate for this opportunity. ' + decision.reason).slice(0,400) }; line = '';
       }
@@ -388,8 +410,10 @@ export class BehaviorCore {
       const factTarget = this.state.facts.find(f => f.id === target)?.target ?? target;
       const silent = decision.action === 'silent' || decision.action === 'defer';
       const saturatedQuestion=event.kind==='trigger'&&event.event!=='question'&&line.includes('?')&&event.observation&&this.perceptionSaturated(event.observation.process,event.observation.title,(event.context as {perceptionFingerprint?:string}|undefined)?.perceptionFingerprint??'');
-      const repeatedQuestion = saturatedQuestion || event.kind === 'trigger' && !event.direct && line.includes('?') && this.d.continuity?.recall(this.query(event), event.observation?.process).some(e => e.want &&
-        (e.want.status !== 'open' || e.want.askedAt !== undefined) && localRelevance(line, e.topic + ' ' + e.want.text).score > 0);
+      const repeatedQuestion = saturatedQuestion || event.kind === 'trigger' && !event.direct && !attention?.engaged && appraisal?.development !== 'changed' && (line.includes('?') || appraisal?.development === 'unchanged') && this.d.continuity?.recall(this.query(event), event.observation?.process).some(e => e.want &&
+        (e.want.status !== 'open' || e.want.askedAt !== undefined || !!e.response && localRelevance(e.response.text,e.topic+' '+e.want.text).score>0)
+        && localRelevance(line, e.topic + ' ' + e.want.text).score > 0);
+      if(repeatedQuestion){decision={...decision,action:'defer',line:'',gesture:'none',reason:'Already expressed curiosity; wait for meaningful development or participation.'};line='';}
       let receiptRevision: number | undefined;
       const delivered = !silent && !repeatedQuestion && this.d.express({ intention:decision.reason, contextSources: this.contextDependencies(), action: decision.action, line, gesture: silent ? 'none' : decision.gesture, target: factTarget,
         onAudioDelivered: response => {

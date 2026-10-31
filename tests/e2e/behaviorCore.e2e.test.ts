@@ -22,7 +22,7 @@ async function mockModel() {
       if (body.messages[0].content.includes('Choose one desktop-companion decision')) {
         const payload = JSON.parse(body.messages.at(-1).content), obs = payload.input.observation;
         text = JSON.stringify(payload.event === 'pat'
-          ? { interpretation: 'Affection interrupts the current color curiosity.', interest: null, action: 'speak', line: 'Mm. I still want to know why you chose that color.', gesture: 'nod', reason: 'Continue the same thought through the pat.', interestDisposition: 'retain' }
+          ? { interpretation: 'Affection interrupts the current color curiosity.', interest: null, action:'speak',expression:{contribution:'personal',timing:'opening',development:'new',physicalClaim:'none'},line: 'Mm. I still want to know why you chose that color.', gesture: 'nod', reason: 'Continue the same thought through the pat.', interestDisposition: 'retain' }
           : { interpretation: 'A color study is open; a broad curiosity can wait.', interest: { topic: 'the color choice', intention: 'Ask about the choice when invited.', sourceId: obs.id, quote: obs.detail }, action: 'defer', line: '', gesture: 'none', reason: 'No reason to interrupt yet.' });
       }
       const send = () => { if (!res.destroyed) { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: text } }] }) + '\n\ndata: [DONE]\n\n'); } };
