@@ -66,3 +66,9 @@ describe('activity, grounded context and background economy', () => {
     // Optional arrivals may be silent, especially after another reaction.
   });
 });
+
+it('deduplicates approved memories and leaves unrelated preferences out of a focused answer',()=>{
+ const saved:any[]=[{id:'old',text:'Likes violet glazes.',status:'approved',source:'user',createdAt:1},{id:'new',text:'Likes violet glazes!',status:'approved',source:'user',createdAt:2},...Array.from({length:20},(_,i)=>({id:'other'+i,text:'Likes unrelated preference '+i,status:'approved',source:'user',createdAt:i+3}))];
+ const selected=selectMemories(saved,'Which violet glazes?');
+ expect(selected.filter(m=>m.text.includes('violet'))).toHaveLength(1);expect(selected[0].id).toBe('new');expect(selected.length).toBeLessThan(5);expect(saved).toHaveLength(22);
+});

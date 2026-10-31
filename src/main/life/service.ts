@@ -16,7 +16,7 @@ export class LifeService {
   private projectSignatures=new Map<string,string>();private chromeSignature='';
   private generation = 0;
   constructor(dir: string, private secrets: SecretStore, invalidated: (source?: string) => void, private enabled: () => boolean, persist: () => boolean, checkpoints?: Checkpoints) {
-    this.ledger=new LifeContext(dir,Date.now,source=>{invalidated(source);this.stage2?.invalidateLearning(source);},persist,checkpoints); this.assembler=new ContextAssembler(this.ledger);
+    this.ledger=new LifeContext(dir,Date.now,source=>{invalidated(source);this.stage2?.invalidateLearning(source);},persist,checkpoints); this.assembler=new ContextAssembler(this.ledger,query=>this.stage2.receiver.query(query));
     this.stage2=new Stage2(dir,this.ledger,secrets,persist,enabled);
     this.stage3=new Stage3(dir,this.ledger,secrets,enabled,persist,this.stage2);
     this.chrome=new ChromeBridge(this.ledger,()=>{try {return JSON.parse(secrets.get('lifeBridge')??'{}');}catch{return {token:'',extensionId:''};}});

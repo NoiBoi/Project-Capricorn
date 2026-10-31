@@ -176,3 +176,12 @@ describe('persistent, attributed companion experiences', () => {
     expect(result.delivered).toBe(false);expect(delivered).toBe(0);expect(scene.snapshot().entries).toHaveLength(0);
   });
 });
+
+it('retrieves delivered opinions and omits expired wants while preserving their source',()=>{
+ const s=setup(),store=s.make(),src=source();
+ store.remember(change(src),[src],store.checkpoint(),'Trace the signal.',{id:'said',at:START,role:'assistant',reliability:'delivered',text:'I prefer the violet oscillator.'});
+ expect(store.recall('violet oscillator')[0].response?.text).toContain('violet oscillator');
+ s.advance(49*3600000);
+ const context=store.experienceContext('violet oscillator');
+ expect(context).toContain('I prefer the violet oscillator.');expect(context).not.toContain('Trace the signal.');expect(context).not.toContain('How do those connections shape the sound?');expect(context).toContain(src.id);
+});

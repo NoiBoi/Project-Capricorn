@@ -1,0 +1,16 @@
+# Functional intelligence and reliability (1.5.2)
+
+The 1.5.1 diagnostic snapshot contained fresh, confirmed phone evidence while direct chat denied having reliable whereabouts. The implementation fixes retrieval and delivery rather than adding another memory store or dialogue loop.
+
+- Direct whereabouts and named-place questions read the existing permitted local location checkpoint. The bounded packet separates fresh phone reports, tentative proximity, corroborated visits and historical evidence. Missing records do not establish nonattendance. Coordinates stay out of model input and external memory.
+- Freshness now uses the accepted fix, not a delayed report's timestamp. Health retains the last authenticated receipt across receiver restart, ages to degraded, and does not clear rejection warnings merely on a timer.
+- Native Codex context delivery was independently reproduced: a single 14 KB application fragment yielded location ignorance; the same evidence delivered in small fragments was used. The existing state packet is now transported in bounded fragments, without another inference or persistent subsystem.
+- Context relevance is evaluated before source quotas. Profile selection removes duplicate statements and unrelated filler. Experience search includes delivered opinions, keeps supporting attribution and omits expired wants from inference context. Character guidance and movement logic are preserved.
+
+Validation: typecheck and production build passed. Focused retrieval/memory/native-session unit checks passed (71, plus the subsequent health regression; the final affected memory/location run passed 29). A broader run returned 846 passed / 4 failed: the same dialogueContinuity, lastingGuideAndVisits, requestRoute and release030 failures recorded for 1.5.1. No fully green broad suite is claimed.
+
+First live model attempts initially denied fresh location and recent history despite correct assembled evidence. After repairing transport, synthetic questions elicited phone proximity near Gym, qualified tentative gym evidence and unavailable-position answers. Separate live questions correctly recalled the cobalt-glaze preference and Capri's violet-oscillator opinion. The fresh-location answer still led with a cautious disclaimer; more natural wording and sustained reductions in repetitive commentary remain unproven. The stale fixture was treated as unavailable for current location; unit tests also cover stale corroborated history.
+
+Packaged tests passed location ingestion/retrieval/privacy, conversation-state persistence, actual native history across restart and evidence at the end of a large native context. All 67 packaged production files matched the build; the archive contained no profile or secret files. Installation details and final source synchronization are recorded in the delivery report.
+
+Limits: location depends on authorized phone reports and retained observations; proximity does not prove attendance or exercise. No speculative universal tool framework, new dependency, external location memory, personality rewrite or increased conversation schedule was added. Long-term initiative and repetitive-screen-commentary improvements require observation during normal use.

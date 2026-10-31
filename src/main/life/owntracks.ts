@@ -18,6 +18,39 @@ export class OwnTracks {
   status='Disabled';readonly geography:Geography;readonly interpreter:LocationInterpreter;private active=false;
   view(){return this.interpreter.view(this.config().location.publicLookup?this.geography.status:'Public lookup disabled. Personal places work offline.');}
   history(){return this.state;}
+  /** Direct questions read the existing local checkpoint, never raw coordinates. */
+  query(text:string,now=Date.now()){
+    const source=this.ledger.source('owntracks');
+    if(!source?.permissions.collect||!source.permissions.live||source.paused)return '';
+    const words:string[]=text.toLowerCase().match(/[a-z]{3,}/g)??[];
+    const named=(name:string)=>name.toLowerCase().match(/[a-z]{3,}/g)?.some(w=>words.includes(w)&&!['the','and','near','general','area'].includes(w));
+    const specific=this.state.visits.some(v=>named(v.name))||this.config().places.some(p=>named(p.name));
+    if(!/\b(where (?:am|are|have|was|were|did)|location|whereabouts|phone (?:position|evidence)|(?:go|gone|went|been|visit|visited|gym|home|travel|lately))\b/i.test(text)&&!specific)return '';
+    this.interpreter.prune(now);
+    const current=/\b(right now|currently|where am i|where are we)\b/i.test(text);
+    const visits=[...this.state.visits].filter(v=>!specific||named(v.name)).sort((a,b)=>b.last-a.last);
+    const projected=visits.map(v=>{
+      const place=this.config().places.find(p=>p.id===v.placeId);
+      const corroborated=['confirmed','departed'].includes(v.state)||v.kind!=='beacon'&&v.supportedMs>=(place?.dwellMinutes??(v.kind==='region'?30:15))*60000&&v.observations>=(place?.minObservations??(v.kind==='region'?5:4));
+      return {place:v.name,kind:v.kind,since:v.since,lastObserved:v.last,endedAt:v.endedAt,
+        status:v.kind==='beacon'?'reported beacon proximity':corroborated?'corroborated phone visit':'tentative phone proximity',current:!v.endedAt&&v.state==='confirmed'&&now-v.last<=300000,
+        supportedMinutes:Math.floor(v.supportedMs/60000),observations:v.observations,reason:v.reason};
+    });
+    const selected:typeof projected=[];let chars=0;
+    for(const v of projected){const size=JSON.stringify(v).length;if(selected.length>=(current?3:6)||chars+size>1800)continue;selected.push(v);chars+=size;}
+    const fix=this.state.lastFix;
+    return JSON.stringify({source:'owntracks',retrievedAt:now,lastPhonePosition:fix?{at:fix.at,fresh:now-fix.at<=300000,accuracyMetres:fix.acc}:null,
+      visits:selected,coverage:!selected.length?'No matching retained phone visits. Absence is not proof of not going.':undefined,
+      meaning:'Phone evidence only, not proof the user attended or exercised. Historical visits do not establish current location. Tentative proximity is not a confirmed visit. Unobserved gaps, routes, rooms and floors are unknown. No raw position is supplied.'});
+  }
+  refreshHealth(now=Date.now()){
+    const prior=this.ledger.view().health.owntracks;
+    if(!this.state.receivedAt||['error','disconnected','paused'].includes(prior?.state??''))return;
+    const fresh=!!this.state.lastFix&&now-this.state.lastFix.at<=300000;
+    if(fresh&&prior?.state==='degraded')return; // New authenticated evidence, not a timer, clears a rejection.
+    this.ledger.setHealth('owntracks',{state:fresh?'healthy':'degraded',lastSync:this.state.receivedAt,
+      detail:fresh?this.state.diagnostic:'Retained phone evidence is available; no fresh GPS position. Historical visits do not establish current presence.'});
+  }
   edit(id:string,action:'delete'|'rename'|'ignore',name?:string){this.interpreter.edit(id,action,name);this.save();return this.view();}
   reset(){this.geography.clear();}
   clearHistory(){this.ledger.invalidate('owntracks');Object.assign(this.state,emptyLocation());this.geography.clear();this.save();}
@@ -37,11 +70,11 @@ export class OwnTracks {
     const ordered=at>this.state.lastAt,fresh=now-at<=5*60000;
     if(!ordered){this.save();return false;} // Delayed out-of-order fixes cannot rewind a place.
     this.state.lastAt=at;
-    if(!fresh){this.state.diagnostic='Delayed historical report ignored for presence and dwell. Waiting for a live report.';this.save();return false;}
+    if(!fresh){this.state.diagnostic='Delayed historical report ignored for presence and dwell. Waiting for a live report.';this.ledger.setHealth('owntracks',{state:'degraded',detail:this.state.diagnostic,lastSync:this.state.receivedAt||undefined});this.save();return false;}
     const supported=this.interpreter.observe({...p,at},this.config().location.publicLookup?this.geography.cached(p):[],now);
     const generation=this.generation;
     if(supported&&this.active&&this.config().location.publicLookup&&!this.config().places.some(place=>distance(p,place)<place.radius+500))void this.geography.nearby(p).then(()=>{if(generation!==this.generation||!this.active||!this.ledger.source('owntracks')?.permissions.collect||this.ledger.source('owntracks')?.paused)return;this.save();});
-    this.ledger.setHealth('owntracks',{state:supported?'healthy':'degraded',detail:this.state.diagnostic,lastSync:now});this.save();return supported;
+    this.ledger.setHealth('owntracks',{state:supported?'healthy':'degraded',detail:this.state.diagnostic,lastSync:supported?now:this.state.receivedAt||undefined});this.save();return supported;
   }
 
   async start(){
@@ -57,7 +90,7 @@ export class OwnTracks {
       req.on('end',()=>{if(size>16384||generation!==this.generation)return;try{if(size)this.accept(JSON.parse(Buffer.concat(chunks).toString('utf8')),String(req.headers['x-limit-d']??''));res.setHeader('content-type','application/json');res.end('[]');}catch{res.writeHead(422).end('Invalid, stale, inaccurate or unauthorized location report');}});
     });
     server.maxConnections=8;server.requestTimeout=10000;server.headersTimeout=10000;server.keepAliveTimeout=1000;
-    try{await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(this.port,'127.0.0.1',resolve);});if(generation!==this.generation){server.close();return;}this.status=`Listening on 127.0.0.1:${this.port}/pub. Tailnet exposure not verified.`;this.ledger.setHealth('owntracks',{state:'waiting',detail:this.status+' Waiting for first valid device report.'});}catch{this.status='Receiver unavailable. Port may be occupied.';this.ledger.setHealth('owntracks',{state:'error',detail:this.status,lastFailure:Date.now()});}
+    try{await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(this.port,'127.0.0.1',resolve);});if(generation!==this.generation){server.close();return;}this.status=`Listening on 127.0.0.1:${this.port}/pub. Tailnet exposure not verified.`;this.ledger.setHealth('owntracks',{state:'waiting',detail:this.status+' Waiting for first valid device report.'});this.refreshHealth();}catch{this.status='Receiver unavailable. Port may be occupied.';this.ledger.setHealth('owntracks',{state:'error',detail:this.status,lastFailure:Date.now()});}
   }
   stop(){this.active=false;this.geography.clear();this.generation++;this.server?.closeAllConnections();this.server?.close();this.server=undefined;this.status='Disabled';}
 }

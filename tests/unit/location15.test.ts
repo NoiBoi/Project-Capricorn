@@ -36,3 +36,32 @@ it('keeps independent support under dense reports while bounding shared presence
 it('enforces retention without new reports and preserves non-spatial provider budgets across restart',()=>{const s=setup(),secrets=new SecretStore(s.dir,{available:()=>false,encrypt:()=>Buffer.alloc(0),decrypt:()=>''});const stage=new Stage2(s.dir,s.life,secrets,()=>true,()=>false);stops.push(()=>stage.stop());stage.setup({...stage.config,device:'iphone',places:s.cfg.places});stage.receiver.accept(s.fix(0),'iphone');stage.receiver.geography.restore({day:20756,requests:12,nextAt:base+3600000});stage.stop();expect(JSON.parse(fs.readFileSync(path.join(s.dir,'life-stage2-state.json'),'utf8')).owntracks.lastFix).toBeDefined();vi.setSystemTime(base+16*60000);stage.maintain();expect(JSON.parse(fs.readFileSync(path.join(s.dir,'life-stage2-state.json'),'utf8')).owntracks.lastFix).toBeUndefined();const next=new Stage2(s.dir,s.life,secrets,()=>true,()=>false);stops.push(()=>next.stop());expect(next.receiver.geography.budget()).toEqual({day:20756,requests:12,nextAt:base+3600000});});
 
 it('pairs authenticated low-frequency beacon regions explicitly and never infers room occupancy from GPS',()=>{const s=setup(),event=(minutes:number,extra={})=>{vi.setSystemTime(base+minutes*60000);return {_type:'transition',t:'b',rid:'private-region',wtst:1234,tst:Date.now()/1000,desc:'Authorized indoor beacon',event:'enter',...extra};};s.r.accept(event(0),'iphone');expect(s.state.visits).toEqual([]);expect(s.r.view().beaconSuggestions).toHaveLength(1);s.cfg.indoorRegions.push({id:'indoor-test',name:'Friend beacon',regionId:'private-region',waypointTimestamp:1234});s.report(1,{inrids:['private-region']});const v=s.state.visits.find(v=>v.kind==='beacon');expect(v).toMatchObject({state:'confirmed',confidence:'medium',name:'Beacon range near Friend beacon'});expect(v?.reason).toContain('never apartment, floor or room occupancy');s.r.accept(event(2,{event:'leave'}),'iphone');expect(v?.state).toBe('unknown');s.report(3,{inrids:['private-region']});expect(v?.state).toBe('unknown');expect(s.life.view().candidates).toEqual([]);expect(()=>s.r.accept(event(4),'other-phone')).toThrow();s.r.edit(v!.id,'ignore');s.r.accept(event(5),'iphone');s.report(6,{inrids:['private-region']});expect(s.state.visits.some(v=>v.kind==='beacon')).toBe(false);});
+
+it('retrieves tentative, corroborated and historical visits directly without coordinates or invented attendance',()=>{
+ const s=setup(),assembler=new ContextAssembler(s.life,q=>s.r.query(q));
+ s.report(0);
+ let packet=JSON.parse(s.r.query('Did I go to the gym?'));
+ expect(packet.visits[0].status).toBe('tentative phone proximity');
+ for(const t of [4,8,12,16])s.report(t);
+ packet=JSON.parse(s.r.query('Where am I right now?'));
+ expect(packet.visits[0]).toMatchObject({place:'Gym',current:true,status:'corroborated phone visit'});
+ expect(packet.lastPhonePosition.fresh).toBe(true);
+ const context=assembler.assemble('Where have I been lately?');
+ expect(context).toContain('corroborated phone visit');expect(context).not.toMatch(/"(?:lat|lon)":/);expect(assembler.suppliedSources).toContain('owntracks');
+ vi.setSystemTime(base+30*60000);s.r.refreshHealth();
+ packet=JSON.parse(s.r.query('Where am I?'));expect(packet.visits[0].current).toBe(false);expect(packet.lastPhonePosition.fresh).toBe(false);expect(s.life.view().health.owntracks.state).toBe('degraded');
+ s.life.configure({...s.life.source('owntracks')!,permissions:{...s.life.source('owntracks')!.permissions,live:false}});
+ expect(s.r.query('Where am I?')).toBe('');
+});
+it('does not turn a delayed timestamp into live GPS or erase retained health on restart',async()=>{
+ const s=setup();for(const t of [0,4,8,12,16])s.report(t);
+ await s.r.start();expect(s.life.view().health.owntracks).toMatchObject({state:'healthy',lastSync:base+16*60000});
+ vi.setSystemTime(base+25*60000);
+ expect(s.r.accept({_type:'location',tst:(base+19*60000)/1000,lat:40,lon:-86,acc:8},'iphone')).toBe(false);
+ expect(s.r.view().live).toBe(false);expect(JSON.parse(s.r.query('Where am I?')).lastPhonePosition.fresh).toBe(false);
+ s.r.clearHistory();expect(JSON.parse(s.r.query('Did I go to the gym?')).visits).toEqual([]);
+});
+
+it('does not clear a rejected-report warning just because a previous fix is still fresh',()=>{
+ const s=setup();s.report(0);s.life.setHealth('owntracks',{state:'degraded',detail:'Phone credentials rejected.'});s.r.refreshHealth();expect(s.life.view().health.owntracks.detail).toBe('Phone credentials rejected.');s.report(1);expect(s.life.view().health.owntracks.state).toBe('healthy');
+});

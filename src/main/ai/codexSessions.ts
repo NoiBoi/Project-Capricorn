@@ -8,6 +8,13 @@ import { CODEX_ENGINE, CODEX_LEAN_CONFIG, codexRequests, codexRetryDelay, findCo
 import { ProviderError } from './providerError';
 
 type Rpc = { id?: number; method?: string; params?: any; result?: any; error?: { message: string; code?: number } };
+/** Large application fragments can arrive only as a preview. Keep the existing
+ * state packet intact across small transport fragments so no file/tool read is needed. */
+export function nativeContext(state:string){
+  const fragments:Record<string,{kind:'application';value:string}>={};
+  for(let i=0;i<state.length;i+=4000)fragments['capri-'+i/4000]={kind:'application',value:JSON.stringify({part:i/4000+1,parts:Math.ceil(state.length/4000),data:state.slice(i,i+4000)})};
+  return fragments;
+}
 /** Private stdio server, never the user's shared daemon. Unknown server requests fail closed. */
 export class CodexSessions implements PersistentSessions {
   private child?: ChildProcessWithoutNullStreams;
@@ -128,7 +135,7 @@ export class CodexSessions implements PersistentSessions {
       else task=codexRequests.run(h.scope==='background'?'ambient':'reply',input.signal,async signal=>{
         const stop=()=>abort();signal.addEventListener('abort',stop,{once:true});
         try {
-          const r=await this.rpc('turn/start',{threadId:h.id,input:[{type:'text',text:input.text}],additionalContext:{capri:{kind:'application',value:input.state}},environments:[],runtimeWorkspaceRoots:[],effort:'low'});
+          const r=await this.rpc('turn/start',{threadId:h.id,input:[{type:'text',text:input.text}],additionalContext:nativeContext(input.state),environments:[],runtimeWorkspaceRoots:[],effort:'low'});
           turnId=r.turn.id;
           while(!done)await new Promise<void>(resolve=>{wake=resolve;});
         } finally {signal.removeEventListener('abort',stop);}

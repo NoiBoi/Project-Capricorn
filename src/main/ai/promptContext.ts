@@ -24,22 +24,24 @@ const relatedTokens = (text: string) => {
 };
 /** Storage stays complete. Select a bounded working set; broad recall explicitly loads the full profile. */
 export function selectMemories(memories: MemoryItem[], query?: string) {
-  const approved = memories.filter(m => m.status === 'approved' && !m.archived);
+  const seen=new Set<string>();
+  const approved = memories.filter(m => m.status === 'approved' && !m.archived).sort((a,b)=>(b.updatedAt??b.createdAt)-(a.updatedAt??a.createdAt)).filter(m=>{
+    const key=m.text.toLowerCase().replace(/\s+/g,' ').trim().replace(/[.!?]+$/,'');if(seen.has(key))return false;seen.add(key);return true;
+  });
   if (!query || /\b(?:who am i|what (?:do you )?(?:know|remember) about me|my (?:profile|memories)|everything.*(?:remember|know))\b/i.test(query)) return approved;
   const q = relatedTokens(query);
   const ranked = approved.map((m, i) => {
     const overlap = [...tokens(m.text)].filter(t => q.has(t) && !STOP.has(t)).length;
     const identity = /\b(name|called|student|university|purdue)\b/i.test(m.text) ? 2 : 0;
-    const preference = m.context?.kind === 'preference' || /\b(prefers?|dislikes?|likes?)\b/i.test(m.text) ? 1 : 0;
-    return { m, i, score: overlap * 4 + identity + preference };
-  }).sort((a, b) => b.score - a.score || b.i - a.i);
+    return { m, i, score: overlap * 4 + identity };
+  }).sort((a, b) => b.score - a.score || a.i - b.i);
   const selected: MemoryItem[] = identityMemories(approved).filter(m => m.text.length <= 700).slice(0, 3);
   let chars = selected.reduce((n, m) => n + m.text.length, 0);
   for (const item of ranked) {
     if (selected.includes(item.m)) continue;
     if (selected.length >= 12) break;
     if (chars + item.m.text.length > 4200) continue;
-    if (item.score <= 0 && selected.length >= 3) break;
+    if (item.score <= 0) break;
     selected.push(item.m); chars += item.m.text.length;
   }
   return selected.sort((a, b) => approved.indexOf(a) - approved.indexOf(b));

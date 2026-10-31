@@ -27,3 +27,22 @@ it.skipIf(process.env.CAPRI_LIVE_SESSIONS!=='1')('continues actual native model 
     expect(after.sessions[0].handle.id).toBe(before.sessions[0].handle.id);expect(after.sessions[0].handle.turns).toBe(2);expect(after.deleted).toBe('deleted');
   }finally{await closeIsolatedApp(app);fs.rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});}
 },180000);
+
+it.skipIf(process.env.CAPRI_LIVE_SESSIONS!=='1')('transmits evidence beyond the preview of a large native application context',async()=>{
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'capri-native-evidence-'));let app:ElectronApplication|undefined;
+ fs.writeFileSync(path.join(dir,'settings.json'),JSON.stringify({firstRunComplete:true,ai:{provider:'offline'},memory:{autoLearn:false},character:{startupIntro:false},voice:{ttsEnabled:false},behavior:{idleRemarks:false,explore:false,smallActivities:false},teleport:{auto:false}}));
+ try{
+  app=await electron.launch({...process.env.CAPRI_EXE?{executablePath:process.env.CAPRI_EXE,args:[]}:{args:[path.resolve(__dirname,'../..')]},env:{...process.env,CAPRI_TEST:'1',CAPRI_OFFSCREEN:'1',CAPRI_NO_DEV_KEY:'1',CAPRI_USER_DATA:dir}});
+  await(await app.firstWindow()).waitForFunction(()=>!!(window as any).__capriDebug);
+  const result=await app.evaluate(async()=>{
+   const backend=(globalThis as any).__capri.modelSessions.backend;
+   const h=await backend.start({scope:'source',model:'gpt-6-luna',instructions:'Answer from the supplied synthetic application evidence. Do not use tools.',dependencies:['owntracks']});
+   let reply='';try{
+    const state=JSON.stringify({olderObservations:'Unrelated historical window metadata. '.repeat(450),phone:{place:'Zinnia Observatory',status:'corroborated phone proximity',fresh:true}});
+    for await(const text of backend.respond(h,{text:'What place does the synthetic phone evidence name?',state,signal:new AbortController().signal,timeoutMs:60000}))reply+=text;
+    return{reply,usage:h.usage};
+   }finally{await backend.invalidate(h);}
+  });
+  console.log('SYNTHETIC_LARGE_CONTEXT_FIRST_ATTEMPT',JSON.stringify(result));expect(result.reply).toMatch(/Zinnia Observatory/i);
+ }finally{await closeIsolatedApp(app);fs.rmSync(dir,{recursive:true,force:true,maxRetries:8,retryDelay:250});}
+},120000);

@@ -8,6 +8,7 @@ import { LifeEvent, LifeSource, LifeEntity, LifeSetupDraft, cleanEvidence, disco
 import type { Checkpoints } from '../../core/contracts';
 import { PageSnapshot, normalizedSections, relevantSections, semanticHash, worldAssertion, eventDeadline, investigation, type SemanticSection } from './perception';
 import { readLegacyCheckpoint } from '../store/checkpointImport';
+import {localRelevance} from '../../shared/recall';
 
 const Saved = z.object({ version: z.literal(1), sources: z.array(LifeSource).max(40), entities: z.array(LifeEntity).max(100), events: z.array(LifeEvent).max(2000), candidates: z.array(z.object({ id: z.string(), source: z.string(), recordId: z.string(), revision: z.number(), status: z.enum(['pending','deferred','delivered','dismissed','expired','superseded']), at: z.number(), expiresAt: z.number(), nextAt: z.number(), attempts: z.number(), reason: z.string(), importance:z.number().default(.55), novelty:z.number().default(1), deadline:z.number().optional(), related:z.array(z.string()).max(8).default([]), phase:z.enum(['noticed','investigated','discussed','concluded','dismissed','resolved','exhausted']).default('noticed'), acknowledgedAt:z.number().optional() })).max(512), watermarks: z.record(z.string(), z.number()).default({}), snapshots:z.array(PageSnapshot).max(24).default([]), reports:z.array(LifeEvent).max(64).default([]), assertions:z.array(WorldAssertion).max(2000).default([]) });
 const key = (e: Pick<LifeObservation, 'source'|'recordId'>) => `${e.source}:${e.recordId}`;
@@ -213,14 +214,15 @@ export class LifeContext {
 /** Shared, budgeted selection for chat and BehaviorCore; native stores remain authoritative. */
 export class ContextAssembler {
   suppliedSources: string[] = [];
-  constructor(private life: LifeContext) {}
+  constructor(private life: LifeContext,private locationQuery?:(query:string)=>string) {}
   assemble(query: string, native: { immediate?: string; history?: string; memories?: string; honcho?: string } = {}, budget = 9500, mode:'chat'|'proactive'='chat') {
     const entities = this.life.resolve(query);
-    const rank=(e:LifeObservation)=>{let score=Number(e.entities.some(id=>entities.includes(id)))+Number(e.quality==='user-statement')+e.importance;
+    const rank=(e:LifeObservation)=>{let score=3*localRelevance(query,e.summary+' '+e.detail).score+Number(e.entities.some(id=>entities.includes(id)))+Number(e.quality==='user-statement')+e.importance;
       if(e.type==='calendar-scheduled')try{const d=JSON.parse(e.detail),delta=d.startAt-this.life.time();score+=delta>=0&&delta<48*3600000?.4:delta<0&&this.life.time()-d.endAt<86400000?.15:-.3;}catch{/* bounded malformed detail earns no priority */}
       return score;};
     const counts=new Map<string,number>();
-    const fresh=[...this.life.current(mode),...this.life.userReports()],ids=new Set(fresh.map(e=>key(e)));
+    const location=mode==='chat'?this.locationQuery?.(query)??'':'';
+    const fresh=[...this.life.current(mode,false),...this.life.userReports()].filter(e=>!location||e.source!=='owntracks'),ids=new Set(fresh.map(e=>key(e)));
     const historical=entities.length?this.life.latest().filter(e=>{const s=this.life.source(e.source);return !ids.has(key(e))&&e.operation!=='delete'&&e.expiresAt<=this.life.time()&&e.entities.some(id=>entities.includes(id))&&s?.permissions.collect&&!s.paused&&(mode==='chat'?s.permissions.live&&e.permissions.live:(s.permissions.proactive??s.permissions.live)&&(e.permissions.proactive??e.permissions.live));}).slice(-2):[];
     const projections=this.life.world(mode);
     const records=[...fresh,...historical].sort((a,b)=>rank(b)-rank(a)||b.occurredAt-a.occurredAt).filter(e=>{const n=counts.get(e.source)??0;counts.set(e.source,n+1);return n<2;}).slice(0,6);
@@ -231,7 +233,9 @@ export class ContextAssembler {
       if(a.source!==b.source&&shared.length&&times(a).some(x=>times(b).some(y=>Math.abs(x-y)<=2*3600000)))links.push(JSON.stringify({sources:[a.source,b.source],records:[a.recordId,b.recordId],sharedEntities:shared,interpretation:'Independent records concern the same configured entity near the same observed or planned time. This does not establish attendance, causation or completion.'}));
     }
     const supplied = new Set<string>();
-    let evidence = links.length?'POSSIBLE CROSS-SOURCE CONNECTIONS: '+links.slice(0,2).join('\n')+'\n':'';
+    let evidence = location?location+'\n':'';
+    if(location)supplied.add('owntracks');
+    if(links.length)evidence+='POSSIBLE CROSS-SOURCE CONNECTIONS: '+links.slice(0,2).join('\n')+'\n';
     const pages=this.life.readPage(query,mode);for(const page of pages){const line=JSON.stringify({approvedPageSections:page})+'\n';if(evidence.length+line.length<=3600){evidence+=line;supplied.add('chrome');}}
     for (const e of records) {
       const fact=projections.find(f=>f.id===key(e));

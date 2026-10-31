@@ -1,3 +1,4 @@
+import {nativeContext} from '../../src/main/ai/codexSessions';
 import { expect, it, vi } from 'vitest';
 import { ConversationSessions, sessionRoute } from '../../src/main/cognitive/conversationSessions';
 import { DialogueCognition } from '../../src/core/dialogueCognition';
@@ -114,4 +115,11 @@ it('keeps evidence-backed opinion changes in the existing relationship owner',()
     expect(saved.text).toBe('Blue');expect(saved.changes?.[0]).toEqual({text:'Red',source});
     expect(store.learnTaste({op:'update',id,topic:'dashboard',text:'Green',evidence:'I prefer green instead.'},{messageId:'webpage',role:'user',at:3000,evidence:'I prefer green instead.'},store.snapshot())).toBe(false);
   }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+it('transports the complete context in bounded native fragments rather than one oversized preview',()=>{
+ const state=JSON.stringify({replaceBlocks:[['body','x'.repeat(14000)],['location','Corroborated phone proximity at Gym']]});
+ const fragments=Object.values(nativeContext(state)).map(f=>JSON.parse(f.value));
+ expect(fragments.length).toBeGreaterThan(3);expect(fragments.every(f=>f.data.length<=4000)).toBe(true);
+ expect(fragments.map(f=>f.data).join('')).toBe(state);
 });
