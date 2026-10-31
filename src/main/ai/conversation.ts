@@ -16,6 +16,7 @@ import type { ExecutionReceipt, ModelSession } from '../../core/contracts';
 import { createHash } from 'node:crypto';
 
 export interface ConversationDeps {
+  trace?(event:string,data:unknown):void;
   sessions?: ConversationSessions;
   settings(): Settings;
   provider(): LLMProvider;
@@ -183,6 +184,7 @@ export class Conversation {
         };
         const session: ModelSession = {id:replyId,revision:round,dependencies:[...sources]};
         if (!this.privateTurn) this.d.onModelSession?.(session);
+        if (!this.privateTurn) this.d.trace?.('model-input',{replyId,userMessageId,round,provider:provider.name,actionMode,sources,messages});
         const stream = this.d.sessions ? this.d.sessions.respond(provider,messages,{agentic:actionMode,temperature:s.ai.temperature,maxTokens:s.ai.maxTokens,timeoutMs:s.ai.requestTimeoutSec*1000,signal:ctrl.signal},{private:this.privateTurn,dependencies:sources,instructions:buildCharacterInstructions(s),model:actionMode?s.ai.codex.taskModel||s.ai.codex.chatModel:s.ai.codex.chatModel}) : provider.stream(messages,{agentic:actionMode,temperature:s.ai.temperature,maxTokens:s.ai.maxTokens,timeoutMs:s.ai.requestTimeoutSec*1000,signal:ctrl.signal});
         for await (const chunk of stream) {
           if (ctrl.signal.aborted) throw new ProviderError('aborted', 'aborted');
@@ -242,6 +244,7 @@ export class Conversation {
       }
       this.d.onProviderResult?.(true, provider.name);
       const msg: ChatMessage = { id: replyId, role: 'assistant', content: visible.trim(), ts: Date.now(), meta: { speech, provider: provider.name, private: this.privateTurn, contextSources: sources } };
+      if (!this.privateTurn) this.d.trace?.('reply',{replyId,userMessageId,message:msg});
       this.d.history.append(msg);
       this.d.emit('chat:done', { message: msg });
       this.d.onAssistantMessage?.(msg, userMessageId);
@@ -255,6 +258,7 @@ export class Conversation {
       const err = aborted ? undefined : friendlyError(e);
       if (!aborted) { this.d.log.warn('turn failed', { provider: provider?.name ?? s.ai.provider, error: e as Error }); this.d.onProviderResult?.(false, provider?.name ?? s.ai.provider, e); }
       const content = visible.trim() || (aborted ? '' : err!);
+      if (!this.privateTurn) this.d.trace?.('error',{replyId,userMessageId,error:err,aborted});
       const msg: ChatMessage = { id: replyId, role: 'assistant', content, ts: Date.now(), meta: { speech:{kind:'system-error'}, provider: provider?.name ?? s.ai.provider, error: err, interrupted: aborted, private: this.privateTurn, contextSources: sources } };
       if (content) this.d.history.append(msg);
       this.d.emit('chat:done', { message: msg });

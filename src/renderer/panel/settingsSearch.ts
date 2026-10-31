@@ -1,6 +1,7 @@
 import type { SearchItem } from "./search";
 // Search destinations mirror the visible settings labels. Add synonyms here when wording differs.
 export const SETTINGS_SEARCH: SearchItem[] = [
+  {page:'settings',label:'Diagnostic export',detail:'Export memories, context and decisions',terms:'snapshot debug export thoughts evidence connections'},
   {"page": "model", "label": "Connection", "detail": "Brain & replies"},
   {"page": "model", "label": "Provider", "detail": "Brain & replies"},
   {"page": "model", "label": "Conversation model", "detail": "Brain & replies"},

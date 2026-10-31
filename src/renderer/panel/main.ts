@@ -112,7 +112,16 @@ const num = (path: string, label: string, min: number, max: number) => h('input'
 const group = (title: string, ...kids: Child[]) => h('section', { class: 'group' }, h('span', { class: 'label' }, title), ...kids);
 const btn = (label: string, onclick: () => unknown, cls = '', ic?: string, title?: string) =>
   h('button', { class: `btn ${cls}`, onclick, title, type: 'button' }, ic ? icon(ic) : null, label);
-const viewHead = (title: string) => h('div', { class: 'view-head' }, h('h1', {}, title));
+let runningVersion='';
+function diagnosticExportControl() {
+  const status=h('p',{class:'hint',role:'status'});
+  const exportButton=btn('Export diagnostic snapshot',async()=>{
+    exportButton.disabled=true;status.textContent='Choose where to save the local snapshot…';
+    try{await flushSettings();const result=await api.invoke('diagnostics:export');status.textContent=result?'Saved '+Math.ceil(result.bytes/1024)+' KB to '+result.path:'Export cancelled.';}catch(e){status.textContent='Export failed: '+String(e);}finally{exportButton.disabled=false;}
+  });
+  return group('Diagnostic export',h('p',{class:'hint'},'Includes memories, messages, source access, location evidence, current cognitive state, recent model inputs and decision summaries. Contains private personal data; review before sharing. Credentials and off-the-record entries are excluded. Saves locally; no upload.'),exportButton,status);
+}
+const viewHead = (title: string) => h('div', { class: 'view-head' }, h('h1', {}, title), runningVersion ? h('span',{class:'hint','data-testid':'app-version'},'Capri '+runningVersion) : null);
 const emptyLine = (t: string) => h('div', { class: 'empty-line' }, t);
 const pct = (v: number) => `${Math.round(v * 100)}%`;
 
@@ -766,7 +775,7 @@ function renderSettings() {
     h('div', { class: 'settings-grid' }, ...['character','attention','voice','model','memory','connections','privacy','system'].map(id => {
       const item = TABS.find(t => t.id === id)!;
       return h('button', { class: 'settings-tile', onclick: () => go(id) }, icon(item.icon), h('strong', {}, item.label), h('span', {}, descriptions[id]));
-    })), capabilityControl());
+    })), diagnosticExportControl(), capabilityControl());
   view.append(viewHead('Settings'), sc);
 }
 
@@ -784,6 +793,7 @@ async function renderSystem() {
     group('Shortcuts', ...([['Open chat', 'Ctrl+Alt+Space'], ['Push to talk', 'Ctrl+Alt+T'], ['Teleport', 'Ctrl+Alt+P'], ['Stop', 'Ctrl+Alt+X'], ['Hide / show', 'Ctrl+Alt+H'], ['Interact (click-through)', 'Ctrl+Alt+C']] as const)
       .map(([d, k]) => field(d, h('span', { class: 'kbd' }, k)))),
   );
+  sc.append(diagnosticExportControl());
   const health = group('Health', emptyLine('Checking…'));
   const logs = h('div', { class: 'logs' });
   sc.append(health, group('Logs', logs, h('div', { class: 'row', style: 'margin:8px 0' },
@@ -813,6 +823,7 @@ async function renderSystem() {
 async function renderDeveloper() {
   const revision = navigationRevision;
   const header = viewHead('Developer tools'), sc = h('div', { class: 'scroll dev-scroll' }); view.append(header, sc);
+  sc.append(diagnosticExportControl());
   const status = h('p', { role: 'status', id: 'dev-status', class: 'dev-status' }, 'Connecting…');
   const log = h('pre', { class: 'logs', id: 'dev-log' });
   const state = h('div', { id: 'dev-state' }), mind = h('div', { id: 'dev-mind' });
@@ -1138,6 +1149,9 @@ async function startPanel() {
   });
   try {
     S = await deadline(api.invoke('settings:get'));
+    const version=await deadline(api.invoke('app:version'));
+    runningVersion=version.version+(version.packaged?'':' (source)');
+    document.title=(developerOnly?'Capri - Developer':'Capri - Companion')+' '+runningVersion;
     const [state, connection] = await Promise.allSettled([deadline(api.invoke('chat:state')), deadline(api.invoke('connection:get'))]);
     if (state.status === 'fulfilled') phase = state.value.phase;
     if (connection.status === 'fulfilled') conn = connection.value;

@@ -64,6 +64,7 @@ const fresh = (): State => ({ version: 1, facts: [], interests: [], interestLive
 export interface Expression { intention?:string; contextSources?: string[]; action: Decision['action']; line: string; gesture: Decision['gesture']; target?: string;
   onAudioDelivered?: (source: ExperienceSource) => void }
 export interface CoreDeps {
+  trace?(event:string,data:unknown):void;
   cognition: CognitiveRuntime;
   directory: string; provider: LLMProvider | (() => LLMProvider); now?: () => number;
   excludedContextSources?:(mode:'chat'|'proactive')=>ReadonlySet<string>;
@@ -323,10 +324,12 @@ export class BehaviorCore {
     const timer = setTimeout(() => { timedOut = true; ctrl.abort(); }, timeoutMs);
     try {
       let raw = '';
+      const inputMessages=this.messages(event);
+      this.d.trace?.('model-input',{revision,provider:provider.name,event:event.kind==='trigger'?event.event:event.kind,messages:inputMessages,screenshotAttached:event.kind==='trigger'&&!!event.jpegBase64,sources:this.contextDependencies()});
       // A host deadline also handles an uncooperative provider that ignores AbortSignal.
       const deadline = new Promise<never>((_, reject) => ctrl.signal.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }));
       await Promise.race([deadline, (async () => {
-        for await (const chunk of provider.stream(this.messages(event), { purpose: 'ambient', jpegBase64: event.kind === 'trigger' ? event.jpegBase64 : undefined,
+        for await (const chunk of provider.stream(inputMessages, { purpose: 'ambient', jpegBase64: event.kind === 'trigger' ? event.jpegBase64 : undefined,
           temperature: .95, maxTokens: 768, timeoutMs, signal: ctrl.signal, outputSchema })) {
           raw += chunk; if (raw.length > 8000) throw new Error('oversized decision');
         }
@@ -415,6 +418,7 @@ export class BehaviorCore {
       }
       receiptRevision = this.d.continuity?.checkpoint();
       // A glance is follow-through, not proof that an unresolved curiosity was answered.
+      this.d.trace?.('decision',{revision,decision,delivered,repeatedQuestion});
       this.record(event, decision.action, decision.reason, delivered, decision.interpretation);
       if(perceptionKey){this.state.saturation=this.state.saturation.filter(s=>s.key!==perceptionKey).concat({key:perceptionKey,at:this.now(),phase:delivered&&line?'discussed':decision.interestDisposition==='clear'?'concluded':'investigated'}).slice(-64);this.save();}
       this.failure = null;
@@ -430,6 +434,7 @@ export class BehaviorCore {
       const summary = error instanceof z.ZodError ? 'Invalid decision fields: ' + error.issues.map(i => i.path.join('.') || 'response').join(', ')
         : error instanceof SyntaxError ? 'Decision was not valid JSON'
         : error instanceof Error && 'kind' in error ? 'Provider ' + String(error.kind) : 'Decision could not be accepted';
+      this.d.trace?.('error',{revision,summary});
       this.failure = { at: this.now(), summary };
       return this.d.fallback ? fallback(summary) : this.record(event, 'silent', summary);
     } finally { clearTimeout(timer); if (this.active === ctrl) this.active = null; }

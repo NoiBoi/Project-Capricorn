@@ -4,6 +4,8 @@ import { PerformanceFeedback } from './cognitive/performanceFeedback';
 import { authoredLineId, authoredLineText } from '../shared/dialogue';
 let performanceDirector:PerformanceDirector;
 let performanceFeedback:PerformanceFeedback;
+import {collectDiagnosticFiles,diagnosticRedactor,diagnosticConnections,DiagnosticTraces} from './diagnosticExport';
+import {SECRET_KEYS} from '../shared/ipc';
 import type { CognitiveSqlite } from './store/cognitiveSqlite';
 import { CognitiveFoundation } from './cognitive/foundation';
 import { ConversationSessions } from './cognitive/conversationSessions';
@@ -147,6 +149,8 @@ let personalContext: PersonalContext;
 let honcho: HonchoMemory;
 let life: LifeService;
 let cognitiveStore: CognitiveSqlite;
+let diagnosticTraces: DiagnosticTraces;
+const sanitizeDiagnostics=(value:unknown)=>diagnosticRedactor(SECRET_KEYS.flatMap(k=>{const v=secrets?.get(k);return v?[v,...(k==='owntracksBasic'?v.split(':').slice(1):[])]:[];}).concat(Object.entries(process.env).filter(([k])=>/KEY|TOKEN|SECRET|PASSWORD/.test(k)).flatMap(([,v])=>v?[v]:[])))(value);
 let cognitive: CognitiveFoundation;
 let agency: AgencyRuntime;
 let cognitiveRuntime: CognitiveRuntime;
@@ -540,6 +544,7 @@ async function init() {
     decrypt: (b) => safeStorage.decryptString(b),
   };
   secrets = new SecretStore(dir, cipher);
+  diagnosticTraces=new DiagnosticTraces(()=>settings.get().privacy.saveHistory&&settings.get().memory.enabled&&!behavior?.diagnostics().privateExchange,sanitizeDiagnostics);
   const s0 = settings.get();
   lastAiSig = providerSignature(s0);
   lastTpSig = JSON.stringify(s0.teleport);
@@ -569,7 +574,7 @@ async function init() {
   honcho = new HonchoMemory({ dir, settings: () => settings.get(), history: () => history.recallHistory(), memories: () => memory.approved(), excluded: () => scenes.excludedSources(), canWork: () => !convo?.busy && !behavior?.busy && settings.get().behavior.mode !== 'sleep' && !developer.active, changed: () => toPanel('memory:changed', null) });
   cognitiveStore.transaction(() => {
     life = new LifeService(dir, secrets, source => cognitive.revoke(source,
-      () => { modelSessions?.invalidate(source); dialogueCognition?.clear(); cancelBehavior(); convo?.stop(); memoryLearner?.pause(); },
+      () => { diagnosticTraces?.clear(); modelSessions?.invalidate(source); dialogueCognition?.clear(); cancelBehavior(); convo?.stop(); memoryLearner?.pause(); },
       () => { cognitiveRuntime?.clear(); behavior?.clear(); }, [chatEvidence, ambientEvidence]),
       () => settings.get().memory.enabled && settings.get().dialogue.localContext,
       () => settings.get().privacy.saveHistory && settings.get().memory.enabled, cognitiveStore);
@@ -578,7 +583,7 @@ async function init() {
   reminders = new ReminderStore(dir);
   offline = new OfflineProvider();
   behaviorPrivacySignature = JSON.stringify([s0.memory.enabled, s0.privacy.saveHistory, s0.dialogue.localContext, s0.actions.policies.read_screen,s0.privacy.activityAwareness.enabled,s0.privacy.activityAwareness.retentionDays,s0.memory.historyRetentionDays]);
-  behavior = new BehaviorCore({ directory: dir, provider: () => {
+  behavior = new BehaviorCore({ trace:(event,data)=>diagnosticTraces.record('ambient',event,data), directory: dir, provider: () => {
     const provider = makeProvider();
     if (provider.name !== 'gemini') return provider;
     // Preserve the existing Gemini image adapter; ordinary requests retain its normal provider path.
@@ -647,6 +652,7 @@ async function init() {
     deliveredAsides: () => scenes.recent(12).filter(x => x.kind === 'said').slice(-3).map(x => ({ text: x.text, messageId: `aside:${x.at}`, at: x.at })),
     canLearn: () => settings.get().behavior.mode !== 'sleep' && !farewell?.active && !convo.busy && !behavior.busy && !behaviorCollecting && !recording && !tourRunning && backgroundBudget.reserve('memory') });
   convo = new Conversation({
+    trace:(event,data)=>diagnosticTraces.record('direct-chat',event,data),
     sessions: modelSessions,
     localReply: text => {
       const request = lineRetirementRequest(text); if (!request) return null;
@@ -672,7 +678,7 @@ async function init() {
       if (!message.meta?.contextSources?.length) learner.attachReply(userId, message.content, message.id, message.ts);
       try { relationship.delivered(message.content); } catch { log.warn('project follow-up state could not be saved'); }
     },
-    onUserMessage: message => { cognitiveRuntime.preempt(message.id,0); stopAgencyMovement(); if(!message.meta?.private&&settings.get().memory.enabled&&settings.get().dialogue.localContext){life.ledger.userMessage(message.content,message.id,message.ts);for(const project of relationship.reconcileUserStatus({role:'user',messageId:message.id,evidence:message.content,at:message.ts})){life.ledger.projectStatement(project,message.content,message.id,message.ts);cognitiveRuntime.transition('project:'+project.id,project.status==='active'?'revised':'resolved');}} cognitiveRuntime.observeMessage(message); chatEvidence.reset(); personalContext.userMessage({ messageId: message.id, text: message.content, at: message.ts }, !!message.meta?.private); if (behavior?.userInput(message.content, message.id)) { if(behavior.diagnostics().privateExchange)environmentalCuriosity.clear();else environmentalCuriosity.dropInterests(); lastInspection = null; } interactionProfile.touch('chat'); conversationScene.record({ id: message.id, role: 'user', text: message.content, at: message.ts, event: 'chat' }); },
+    onUserMessage: message => { if(message.meta?.private)diagnosticTraces.clear(); cognitiveRuntime.preempt(message.id,0); stopAgencyMovement(); if(!message.meta?.private&&settings.get().memory.enabled&&settings.get().dialogue.localContext){life.ledger.userMessage(message.content,message.id,message.ts);for(const project of relationship.reconcileUserStatus({role:'user',messageId:message.id,evidence:message.content,at:message.ts})){life.ledger.projectStatement(project,message.content,message.id,message.ts);cognitiveRuntime.transition('project:'+project.id,project.status==='active'?'revised':'resolved');}} cognitiveRuntime.observeMessage(message); chatEvidence.reset(); personalContext.userMessage({ messageId: message.id, text: message.content, at: message.ts }, !!message.meta?.private); if (behavior?.userInput(message.content, message.id)) { if(behavior.diagnostics().privateExchange)environmentalCuriosity.clear();else environmentalCuriosity.dropInterests(); lastInspection = null; } interactionProfile.touch('chat'); conversationScene.record({ id: message.id, role: 'user', text: message.content, at: message.ts, event: 'chat' }); },
     pauseLearning: () => { learner.pause(); cancelBehavior(); visit.cancel(); },
     queueLearning: (text, messageId) => { learner.enqueue(text, messageId); },
     contextSources: () => chatEvidence.snapshot(),
@@ -874,7 +880,7 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
   else if (!TEST && process.argv.includes('--minimize-capri')) setTimeout(() => taskbar?.command('minimize'), 800);
   else if (!TEST && process.argv.includes('--replay-intro')) setTimeout(() => { if (!opening.active) playOpening(); }, 800);
   if(TEST)(globalThis as any).__capriVisits={desktopVisits,physicalCues,taskbarVisit,adjustWithinWindow,recordDragOrigin,musicChanges,get lowerAnchor(){return lowerAnchor;},get localVisitActive(){return localVisitActive;}};
-  if (TEST) (globalThis as Record<string, unknown>).__capri = { activateChatWindow, openLongTermChat, openCompanion, cognitiveRuntime, modelSessions, performanceDirector, performanceFeedback, dialogueCognition, agency, agencyHost, observeAgency, maintainAgency, cognitiveStore, get landingRest() { return landingRest; }, get falling() { return !!fallTimer; }, get theatre() { return theatre; }, runTheatre, theatreFrame, get teleporter() { return teleporter; }, get monitor() { return monitor; }, settings, convo, history, memory, honcho, life, relationship, personalContext, retiredLines, memoryLearner, conversationScene, get behavior() { return behavior; }, interactionProfile, notes, reminders, secrets, get charWin() { return charWin; }, get panelWin() { return panelWin; }, get developerWin() { return developerWin; }, bubble, get startupMs() { return startupMs; }, get speakCount() { return speakCount; }, generatedRemark, captureWindowObservation, visibleObservationWindows, sharedSceneContext, reactToOwnPanel, dropPerch, dropLower, placement, environmentalCuriosity, get lastInspection() { return lastInspection; }, get lastDialogueOutcome() { return lastDialogueOutcome; }, scenes, presentRemark, curiosityDetour, get curiosityActive() { return curiosityActive; }, outings, companionDialogue, interaction, pickupReaction, localDialogueContext, localActivity, gameActive, raiseTick, get exploringHandle() { return exploringHandle; }, get tourStage() { return tourStage; }, desktopWindows, safeForTarget, setNextVisit() { nextWindowVisit = 0; }, presenceTick, settleAfterDrop, throwCharacter, useComputer, exploreTick, get throwing() { return !!throwTimer; }, get attentionHandle() { return attentionHandle; }, get perchMode() { return perchMode; }, get nextWindowVisit() { return nextWindowVisit; }, systemIdleSec, perchTick, activities, favoriteSpots, cursorReturn, returnToCursor, setCursorIdle: (seconds: number) => { lastCursorMovedAt = Date.now() - seconds * 1000; }, pendingConfirms, log, get opening() { return opening; }, get taskbar() { return taskbar; }, playOpening, minimizeCapri, restoreCapri, company, visit, applyCompanyControl, presenceDebug: () => ({ target: String(lastDesktopHandle), desktop: lastDesktop, tracked: !!trackedWindowFor(lastDesktopHandle), request: !!behavior?.busy, revision: placementRevision, watched: String(watchedHandle), encounter: encounters.current }) };
+  if (TEST) (globalThis as Record<string, unknown>).__capri = { buildDiagnosticSnapshot, diagnosticTraces, activateChatWindow, openLongTermChat, openCompanion, cognitiveRuntime, modelSessions, performanceDirector, performanceFeedback, dialogueCognition, agency, agencyHost, observeAgency, maintainAgency, cognitiveStore, get landingRest() { return landingRest; }, get falling() { return !!fallTimer; }, get theatre() { return theatre; }, runTheatre, theatreFrame, get teleporter() { return teleporter; }, get monitor() { return monitor; }, settings, convo, history, memory, honcho, life, relationship, personalContext, retiredLines, memoryLearner, conversationScene, get behavior() { return behavior; }, interactionProfile, notes, reminders, secrets, get charWin() { return charWin; }, get panelWin() { return panelWin; }, get developerWin() { return developerWin; }, bubble, get startupMs() { return startupMs; }, get speakCount() { return speakCount; }, generatedRemark, captureWindowObservation, visibleObservationWindows, sharedSceneContext, reactToOwnPanel, dropPerch, dropLower, placement, environmentalCuriosity, get lastInspection() { return lastInspection; }, get lastDialogueOutcome() { return lastDialogueOutcome; }, scenes, presentRemark, curiosityDetour, get curiosityActive() { return curiosityActive; }, outings, companionDialogue, interaction, pickupReaction, localDialogueContext, localActivity, gameActive, raiseTick, get exploringHandle() { return exploringHandle; }, get tourStage() { return tourStage; }, desktopWindows, safeForTarget, setNextVisit() { nextWindowVisit = 0; }, presenceTick, settleAfterDrop, throwCharacter, useComputer, exploreTick, get throwing() { return !!throwTimer; }, get attentionHandle() { return attentionHandle; }, get perchMode() { return perchMode; }, get nextWindowVisit() { return nextWindowVisit; }, systemIdleSec, perchTick, activities, favoriteSpots, cursorReturn, returnToCursor, setCursorIdle: (seconds: number) => { lastCursorMovedAt = Date.now() - seconds * 1000; }, pendingConfirms, log, get opening() { return opening; }, get taskbar() { return taskbar; }, playOpening, minimizeCapri, restoreCapri, company, visit, applyCompanyControl, presenceDebug: () => ({ target: String(lastDesktopHandle), desktop: lastDesktop, tracked: !!trackedWindowFor(lastDesktopHandle), request: !!behavior?.busy, revision: placementRevision, watched: String(watchedHandle), encounter: encounters.current }) };
 }
 
 // ---------------------------------------------------------------- desktop-pet handling: drop onto a ledge, throw
@@ -1853,6 +1859,7 @@ function sourceLearningContext(mode: 'chat' | 'proactive', evidence: RequestEvid
   return text;
 }
 function forgetActivityContext(){
+  diagnosticTraces?.clear();
   cancelBehavior();convo?.stop();memoryLearner?.pause();modelSessions?.invalidate('activity-patterns');dialogueCognition?.clear();conversationScene?.invalidateContext('activity-patterns');behavior?.clear();
 }
 function activityPatternContext(query:string,evidence:RequestEvidence){
@@ -1979,7 +1986,7 @@ function onSettingsChanged(s: Settings) {
   conversationScene?.privacyChanged();
   const privacySignature = JSON.stringify([s.memory.enabled, s.privacy.saveHistory, s.dialogue.localContext, s.actions.policies.read_screen,s.privacy.activityAwareness.enabled,s.privacy.activityAwareness.retentionDays,s.memory.historyRetentionDays]);
   if (privacySignature !== behaviorPrivacySignature) {
-    modelSessions?.clear(); cognitiveRuntime?.clear();
+    diagnosticTraces?.clear(); modelSessions?.clear(); cognitiveRuntime?.clear();
     if (life) { cancelBehavior(); convo?.stop(); conversationScene?.invalidateContext(); chatEvidence.reset(); ambientEvidence.reset(); if (!s.memory.enabled || !s.privacy.saveHistory) memoryLearner?.discard(); else memoryLearner?.pause(); void life.start(); life.ledger.flush(); }
     personalContext?.privacyChanged();
     behaviorPrivacySignature = privacySignature; cancelBehavior(); behavior?.privacyChanged(); environmentalCuriosity.clear(); lastInspection = null;
@@ -3188,16 +3195,16 @@ function registerIpc() {
     cancelBehavior(); placementRevision++;
     if (placementTimer) clearTimeout(placementTimer); placementTimer = null;
     convo.stop(); await convo.settle();
-    environmentalCuriosity.clear(); lastInspection = null; void honcho.forget(); memoryLearner.discard(); modelSessions?.clear(); cognitiveRuntime?.clear(); performanceFeedback?.clear(); cognitive.clearActivity(); agency?.clearHistory(); history.clear(); life?.clear(); personalContext.clear(); scenes.clear(); conversationScene.clear(); behavior?.clear(); interactionProfile.clear(); clearPingHistory();
+    diagnosticTraces.clear(); environmentalCuriosity.clear(); lastInspection = null; void honcho.forget(); memoryLearner.discard(); modelSessions?.clear(); cognitiveRuntime?.clear(); performanceFeedback?.clear(); cognitive.clearActivity(); agency?.clearHistory(); history.clear(); life?.clear(); personalContext.clear(); scenes.clear(); conversationScene.clear(); behavior?.clear(); interactionProfile.clear(); clearPingHistory();
   });
 
   handle('memory:list', 'panel', none, () => memory.list());
   handle('memory:add', 'panel', str(300), (t) => memory.add(t, 'user'));
-  handle('memory:undo', 'panel', str(64), (id) => { modelSessions?.clear(); dialogueCognition?.clear(); memoryLearner.discard(); memory.undo(id); });
-  handle('memory:update', 'panel', z.object({ id: str(64), text: str(300) }), ({ id, text }) => { modelSessions?.clear(); dialogueCognition?.clear(); memoryLearner.discard(); return memory.update(id, text); });
+  handle('memory:undo', 'panel', str(64), (id) => { diagnosticTraces?.clear(); modelSessions?.clear(); dialogueCognition?.clear(); memoryLearner.discard(); memory.undo(id); });
+  handle('memory:update', 'panel', z.object({ id: str(64), text: str(300) }), ({ id, text }) => { diagnosticTraces?.clear(); modelSessions?.clear(); dialogueCognition?.clear(); memoryLearner.discard(); return memory.update(id, text); });
   handle('memory:approve', 'panel', str(64), (id) => memory.approve(id));
-  handle('memory:delete', 'panel', str(64), (id) => { modelSessions?.clear(); dialogueCognition?.clear(); memoryLearner.discard(); memory.delete(id); });
-  handle('memory:clear', 'panel', none, () => { modelSessions?.clear(); dialogueCognition?.clear(); cue({ type: 'stopSpeech' }); environmentalCuriosity.clear(); lastInspection = null; void honcho.forget(); memoryLearner.discard(); memory.clear(); life.clear(); personalContext.clear(); scenes.clearExperiences(); conversationScene.clear(); behavior?.clear(); interactionProfile.clear(); relationship.clear(); });
+  handle('memory:delete', 'panel', str(64), (id) => { diagnosticTraces?.clear(); modelSessions?.clear(); dialogueCognition?.clear(); memoryLearner.discard(); memory.delete(id); });
+  handle('memory:clear', 'panel', none, () => { diagnosticTraces?.clear(); modelSessions?.clear(); dialogueCognition?.clear(); cue({ type: 'stopSpeech' }); environmentalCuriosity.clear(); lastInspection = null; void honcho.forget(); memoryLearner.discard(); memory.clear(); life.clear(); personalContext.clear(); scenes.clearExperiences(); conversationScene.clear(); behavior?.clear(); interactionProfile.clear(); relationship.clear(); });
   handle('memory:patterns', 'panel', none, () => interactionProfile.summary());
   handle('honcho:status', 'panel', none, () => honcho.status());
   handle('honcho:sync', 'panel', none, async () => { await honcho.refresh(); return honcho.status(); });
@@ -3233,7 +3240,7 @@ function registerIpc() {
   handle('life:locationClear','panel',none,()=>{life.stage2.receiver.clearHistory();return true;});
   handle('life:locationKey','panel',none,()=>life.stage2.generate());
   handle('life:get', 'panel', none, () => life.ledger.view());
-  handle('life:configure', 'panel', LifeSource, input => life.configure(input));
+  handle('life:configure', 'panel', LifeSource, input => {diagnosticTraces.clear();return life.configure(input);});
   handle('life:addProject', 'panel', none, async () => {
     const selected = await dialog.showOpenDialog(panelWin!, { title: 'Choose a project Capri may monitor', properties: ['openDirectory'] });
     return selected.canceled || !selected.filePaths[0] ? life.ledger.view() : life.addProject(selected.filePaths[0]);
@@ -3249,18 +3256,18 @@ function registerIpc() {
     const at=Date.now();life.ledger.ingest({...original,revision:Math.max(at,original.revision+1),occurredAt:at,receivedAt:at,quality:'user-statement',operation:'correct',entities:life.ledger.resolve(input.summary),summary:input.summary,detail:'Explicit user correction in Connections',importance:.2});
   });
   handle('personal:get', 'panel', none, () => personalContext.snapshot());
-  handle('personal:manage', 'panel', z.object({ id: str(100), action: z.enum(['complete','dismiss','forget']) }), input => { modelSessions?.clear(); dialogueCognition?.clear();
+  handle('personal:manage', 'panel', z.object({ id: str(100), action: z.enum(['complete','dismiss','forget']) }), input => { diagnosticTraces?.clear(); modelSessions?.clear(); dialogueCognition?.clear();
     void honcho.forget(); memoryLearner.discard(); cancelBehavior(); personalContext.manage(input.id, input.action);
   });
-  handle('personal:clear', 'panel', none, () => { modelSessions?.clear(); dialogueCognition?.clear(); void honcho.forget(); memoryLearner.discard(); cancelBehavior(); personalContext.clear(); });
+  handle('personal:clear', 'panel', none, () => { diagnosticTraces?.clear(); modelSessions?.clear(); dialogueCognition?.clear(); void honcho.forget(); memoryLearner.discard(); cancelBehavior(); personalContext.clear(); });
   handle('memory:clearPatterns', 'panel', none, () => {interactionProfile.clear();forgetActivityContext();});
   handle('activity:summary','panel',none,()=>interactionProfile.activitySummary());
   handle('activity:clear','panel',none,()=>{interactionProfile.clearActivity();forgetActivityContext();});
   handle('relationship:get', 'panel', none, () => ({ state: relationship.snapshot(), retired: retiredLines.list() }));
-  handle('relationship:taste', 'panel', z.object({ id: str(100).optional(), topic: str(70), text: str(300) }), input => { modelSessions?.clear(); dialogueCognition?.clear(); void honcho.forget(); memoryLearner.discard(); return relationship.setTaste(input); });
-  handle('relationship:thread', 'panel', z.object({ id: str(100).optional(), title: str(80), summary: str(300), status: z.enum(['active', 'paused', 'done', 'dismissed']) }), input => { modelSessions?.clear(); dialogueCognition?.clear(); void honcho.forget(); memoryLearner.discard(); return relationship.setThread(input); });
-  handle('relationship:status', 'panel', z.object({ id: str(100), status: z.enum(['active', 'paused', 'done', 'dismissed']), snoozeDays: z.number().int().min(0).max(90).optional() }), input => { modelSessions?.clear(); dialogueCognition?.clear(); void honcho.forget(); memoryLearner.discard(); relationship.status(input.id, input.status, input.snoozeDays); });
-  handle('relationship:remove', 'panel', z.object({ kind: z.enum(['taste', 'thread']), id: str(100) }), input => { modelSessions?.clear(); dialogueCognition?.clear(); void honcho.forget(); memoryLearner.discard(); relationship.remove(input.kind, input.id); });
+  handle('relationship:taste', 'panel', z.object({ id: str(100).optional(), topic: str(70), text: str(300) }), input => { diagnosticTraces?.clear(); modelSessions?.clear(); dialogueCognition?.clear(); void honcho.forget(); memoryLearner.discard(); return relationship.setTaste(input); });
+  handle('relationship:thread', 'panel', z.object({ id: str(100).optional(), title: str(80), summary: str(300), status: z.enum(['active', 'paused', 'done', 'dismissed']) }), input => { diagnosticTraces?.clear(); modelSessions?.clear(); dialogueCognition?.clear(); void honcho.forget(); memoryLearner.discard(); return relationship.setThread(input); });
+  handle('relationship:status', 'panel', z.object({ id: str(100), status: z.enum(['active', 'paused', 'done', 'dismissed']), snoozeDays: z.number().int().min(0).max(90).optional() }), input => { diagnosticTraces?.clear(); modelSessions?.clear(); dialogueCognition?.clear(); void honcho.forget(); memoryLearner.discard(); relationship.status(input.id, input.status, input.snoozeDays); });
+  handle('relationship:remove', 'panel', z.object({ kind: z.enum(['taste', 'thread']), id: str(100) }), input => { diagnosticTraces?.clear(); modelSessions?.clear(); dialogueCognition?.clear(); void honcho.forget(); memoryLearner.discard(); relationship.remove(input.kind, input.id); });
   handle('dialogue:feedback','chat',z.object({messageId:str(100),kind:z.enum(['repetitive','generic','character','intrusive'])}).strict(),input=>{
     const message=history.recent(200).find(m=>m.id===input.messageId);
     if(!message || message.role!=='assistant'||!message.meta?.speech?.kind.startsWith('generated')||message.meta?.private)throw Error('Feedback is available for retained generated replies.');
@@ -3269,7 +3276,7 @@ function registerIpc() {
   handle('dialogue:retire', 'chat', str(100), retireLine);
   handle('dialogue:restore', 'panel', str(100), id => retiredLines.restore(id));
   handle('dialogue:scene', 'panel', none, () => conversationScene.snapshot());
-  handle('dialogue:clearScene', 'panel', none, () => { modelSessions?.clear(); dialogueCognition?.clear(); cue({ type: 'stopSpeech' }); void honcho.forget(); memoryLearner.discard(); conversationScene.clear(); behavior?.clear(); });
+  handle('dialogue:clearScene', 'panel', none, () => { diagnosticTraces?.clear(); modelSessions?.clear(); dialogueCognition?.clear(); cue({ type: 'stopSpeech' }); void honcho.forget(); memoryLearner.discard(); conversationScene.clear(); behavior?.clear(); });
   handle('continuity:get', 'panel', none, () => scenes.experiences());
   handle('continuity:manage', 'panel', z.object({ id: str(100), action: z.enum(['resolve','dismiss','forget','correct']), text: str(1000).optional() }), input => {
     cue({ type: 'stopSpeech' });
@@ -3311,6 +3318,14 @@ function registerIpc() {
     if (phase === 'in') { raiseCharacter(); raiseSoon(); }
   });
   handle('connection:check', 'panel', none, async () => { await monitor.check('manual'); return monitor.status; });
+  handle('app:version','panel',none,()=>({version:app.getVersion(),packaged:app.isPackaged}));
+  handle('diagnostics:export','panel',none,async()=>{
+    const result=await dialog.showSaveDialog({title:'Export Capri diagnostic snapshot',defaultPath:path.join(app.getPath('documents'),'Capri-diagnostics-'+app.getVersion()+'-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json'),filters:[{name:'Diagnostic JSON',extensions:['json']}]});
+    if(result.canceled||!result.filePath)return null;
+    const text=JSON.stringify(sanitizeDiagnostics(buildDiagnosticSnapshot()));
+    await fs.promises.writeFile(result.filePath,text,{encoding:'utf8',mode:0o600});
+    return {path:result.filePath,bytes:Buffer.byteLength(text)};
+  });
   handle('diagnostics:get', 'panel', none, diagnostics);
   handle('logs:tail', 'panel', z.number().int().min(1).max(2000), (n) => log.tail(n));
   handle('app:openDataFolder', 'panel', none, () => shell.openPath(app.getPath('userData')));
@@ -3390,6 +3405,34 @@ function registerIpc() {
   });
 }
 
+function buildDiagnosticSnapshot() {
+  const dir=app.getPath('userData'),s=settings.get();
+  const files=collectDiagnosticFiles(dir);
+  const sections:Record<string,unknown>={},errors:Record<string,string>={};
+  const capture=(name:string,read:()=>unknown)=>{try{sections[name]=read();}catch(e){errors[name]=e instanceof Error?e.message:String(e);}};
+  capture('runtime',()=>({version:app.getVersion(),packaged:app.isPackaged,executable:process.execPath,profile:dir,electron:process.versions.electron,connection:monitor.status,phase:convo.phase,settings:s,secretPresence:secrets.status()}));
+  capture('developer',devSnapshot);
+  capture('cognition',()=>cognitiveRuntime.snapshot());
+  capture('cognitiveRecords',()=>cognitiveStore.diagnosticRecords());
+  capture('memories',()=>memory.list());
+  capture('conversation',()=>history.recallHistory());
+  capture('notes',()=>notes.list());
+  capture('reminders',()=>reminders.list());
+  capture('life',()=>life.ledger.view());
+  capture('connectionInventory',()=>diagnosticConnections(life.ledger.view()));
+  capture('localMemoryAndLearning',()=>({memoryEnabled:s.memory.enabled,automaticLearning:s.memory.autoLearn,honcho:honcho.status(),localActivity:interactionProfile.activitySummary(),screenAccessPolicy:s.actions.policies.read_screen}));
+  capture('locationAndIntegrations',()=>life.stage2.view());
+  capture('locationCheckpoint',()=>life.stage2.receiver.history());
+  capture('communicationIntegrations',()=>life.stage3.view());
+  capture('currentChatEvidence',()=>({dependencies:chatEvidence.snapshot(),excludedSources:[...lifeExcludedSources('chat')],eligibleEvents:life.ledger.current('chat'),world:life.ledger.world('chat')}));
+  capture('currentAmbientEvidence',()=>({dependencies:ambientEvidence.snapshot(),excludedSources:[...lifeExcludedSources('proactive')],eligibleEvents:life.ledger.current('proactive'),world:life.ledger.world('proactive')}));
+  capture('modelSessions',()=>modelSessions.snapshot());
+  capture('recentModelTraces',()=>diagnosticTraces.snapshot());
+  capture('logs',()=>log.tail(2000));
+  return {format:'capri-diagnostics',schemaVersion:1,exportedAt:new Date().toISOString(),
+    readme:'Private local diagnostic snapshot. Contains personal messages, memories, screen descriptions and location evidence. Share deliberately. Recorded structured interpretations and decision reasons are summaries, not hidden model reasoning. Stored data is not proof it was supplied to a model: compare recentModelTraces with eligibleEvents, permissions, exclusions, expiry and context dependencies. No model calls, source sync, screenshots or external fetches are performed by this export.',
+    limitations:['Runtime sections are captured sequentially, not as an atomic point-in-time transaction.','No model traces from before this application session; session traces are bounded and off-the-record requests are excluded.','Model-internal reasoning and remote/native session history are unavailable.','Raw GPS history not retained by the application cannot be recovered.','File inventory reports absent, oversized or unreadable files; errors identify unavailable runtime sections.','Application-owned stores may include legacy snapshots; cognitive records and runtime views are authoritative after migration.'],sections,errors,files};
+}
 async function diagnostics(): Promise<Diagnostics> {
   const s = settings.get();
   const provider = makeProvider();

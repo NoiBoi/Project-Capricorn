@@ -234,6 +234,8 @@ export interface InvokeMap {
   'claude:signin': [void, { ok: boolean; detail?: string }];
   'claude:code': [string, { installed: boolean; loggedIn: boolean; account?: string; detail: string }];
   'claude:signout': [void, void];
+  'app:version': [void, {version:string;packaged:boolean}];
+  'diagnostics:export': [void, {path:string;bytes:number}|null];
   'diagnostics:get': [void, Diagnostics];
   'logs:tail': [number, string[]];
   'app:openDataFolder': [void, void];
@@ -290,7 +292,7 @@ export const INVOKE_CHANNELS: InvokeChannel[] = [
   'personal:get', 'personal:manage', 'personal:clear',
   'honcho:status', 'honcho:sync', 'honcho:rebuild',
   'continuity:get', 'continuity:manage', 'continuity:clear',
-  'action:respond', 'provider:test', 'provider:models', 'claude:status', 'claude:signin', 'claude:code', 'claude:signout', 'diagnostics:get', 'logs:tail', 'app:openDataFolder',
+  'action:respond', 'provider:test', 'provider:models', 'claude:status', 'claude:signin', 'claude:code', 'claude:signout', 'app:version', 'diagnostics:export', 'diagnostics:get', 'logs:tail', 'app:openDataFolder',
   'app:resetAll', 'app:quit', 'app:restart', 'apps:pick', 'folders:pick', 'panel:open', 'panel:close', 'panel:ready', 'panel:viewed',
   'voice:ptt', 'char:hit', 'char:anchor', 'char:drag', 'char:click', 'char:menu', 'char:speechState', 'char:audio',
   'char:micError', 'char:performance', 'char:poseRenderer', 'char:fps', 'char:ready', 'tts:fetch', 'connection:get', 'connection:check', 'teleport:now', 'char:teleport',

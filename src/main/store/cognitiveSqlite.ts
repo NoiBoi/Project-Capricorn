@@ -63,6 +63,12 @@ export class CognitiveSqlite implements StatePersistence, Checkpoints {
     const dependencies = this.db.prepare('SELECT source FROM dependencies WHERE kind=? AND id=? ORDER BY source').all(kind,id).map(r => String(r.source));
     return { kind, id, revision: Number(row.revision), at: Number(row.at), value: JSON.parse(String(row.value)), dependencies };
   }
+  diagnosticRecords() {
+    return this.db.prepare('SELECT kind,id,revision,at,value FROM records ORDER BY kind,id').all().map(row => ({
+      kind:row.kind,id:row.id,revision:row.revision,at:row.at,value:JSON.parse(String(row.value)),
+      dependencies:this.db.prepare('SELECT source FROM dependencies WHERE kind=? AND id=? ORDER BY source').all(row.kind,row.id).map(d=>String(d.source)),
+    }));
+  }
   remove(kind: RecordKind, id: string) { this.db.prepare('DELETE FROM records WHERE kind=? AND id=?').run(kind,id); }
   invalidate(source: string) {
     return this.transaction(() => {
