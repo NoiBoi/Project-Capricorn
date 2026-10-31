@@ -24,3 +24,32 @@ export function needsActions(text: string, history: LLMMessage[] = []): boolean 
   }
   return false;
 }
+
+/** Only the current user message can authorize a read; source context cannot. */
+export function screenInspectionRequested(text:string, target?:string) {
+  if (/\b(?:don't|do not|never)\s+(?:look|inspect|read|examine|check|see|describe)\b|\b(?:cannot|can't)\b/i.test(text) || /[<>]/.test(text)) return false;
+  const request=text.trim().replace(/^(?:off the record[,;:.]?\s*)/i,'').replace(/^(?:hey\s+)?capri[,!]?\s+/i,'').replace(/^(?:can|could|would|will) you\s+/i,'').replace(/^please[, ]+\s*/i,'');
+  const requested=/^(?:take (?:a )?look at|look at|inspect|read|examine|check|see|describe)\b/i.test(request)&&/\b(?:window|screen|desktop)\b/i.test(request)
+    || /^(?:what do you see|what(?:'s| is| are) (?:visible|shown|displayed|on|in)|tell me what(?:'s| is) (?:on|in))\b/i.test(request)&&/\b(?:window|screen|desktop)\b/i.test(request);
+  if(!requested)return false;
+  if(!target){
+    const named=/(?:look at|inspect|read|examine|check|see|describe)\s+(?:(?:the|my)\s+)?(.+?)\s+window\b/i.exec(text);
+    return !named||/^(?:this|that|current|active|your|my|the)$/i.test(named[1].trim());
+  }
+  const q=target.toLowerCase().replace(/^(?:the|my)\s+/,'').replace(/\s+window$/,'').trim();
+  return text.toLowerCase().includes(q)||/^(?:this|that|current|active)$/.test(q)&&/\b(?:this|that|current|active)\s+(?:window|screen)\b/i.test(text);
+}
+
+/** Unambiguous direct reads use the existing action executor before inference.
+ * Complex/ambiguous requests still use the model's validated action catalog. */
+export function directInspectionAction(text:string): {tool:'read_screen';args:{window?:string}} | null {
+  const named=/(?:look at|inspect|read|examine|check|see|describe)\s+(?:(?:the|my)\s+)?(.+?)\s+window\b/i.exec(text);
+  if(named){
+    const query=named[1].trim().replace(/^['"]|['"]$/g,'');
+    if(query.length>200||!screenInspectionRequested(text,query))return null;
+    return {tool:'read_screen',args:/^(?:this|that|current|active)$/i.test(query)?{}:{window:query}};
+  }
+  if(!screenInspectionRequested(text))return null;
+  if(/\b(?:read|inspect|look at|examine|check|see|describe)\s+(?:(?:my|the|this|that|current|active)\s+)?(?:screen|desktop|window)\b/i.test(text))return {tool:'read_screen',args:{}};
+  return null;
+}
