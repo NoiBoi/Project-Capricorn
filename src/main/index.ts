@@ -1,3 +1,6 @@
+import { selectRuntime, assertSyntheticProfile } from './runtime2/selection';
+import { Runtime2 } from './runtime2/runtime';
+import { WindowFocusSource } from './runtime2/windowFocus';
 import { CognitiveRuntime, type CognitiveEffect } from '../core/cognitiveRuntime';
 import { PerformanceDirector, type SpeechOrigin, type Reaction } from '../core/performance';
 import { PerformanceFeedback } from './cognitive/performanceFeedback';
@@ -109,8 +112,11 @@ import { probeWindowsRecognizer, transcribeOpenAI, transcribeWindows, WakeWordLi
 
 const T0 = performance.timeOrigin;
 const TEST = process.env.CAPRI_TEST === '1';
-const profilePath = profileDirectory(app.getPath('home'), process.env.CAPRI_USER_DATA);
-if (!process.env.CAPRI_USER_DATA) initializeProfile(profilePath, legacyProfiles(app.getPath('home'), app.getPath('appData')));
+const runtimeSelection = selectRuntime(process.env, app.getPath('home'), app.isPackaged);
+const experimental = runtimeSelection.mode === '2';
+const profilePath = runtimeSelection.profile ?? profileDirectory(app.getPath('home'), process.env.CAPRI_USER_DATA);
+if (experimental) assertSyntheticProfile(profilePath);
+if (!experimental && !process.env.CAPRI_USER_DATA) initializeProfile(profilePath, legacyProfiles(app.getPath('home'), app.getPath('appData')));
 app.setPath('userData', profilePath);
 app.setPath('sessionData', profilePath);
 // test/capture only: render at a fixed device scale (crisp high-res frames for the trailer harness)
@@ -154,6 +160,8 @@ const sanitizeDiagnostics=(value:unknown)=>diagnosticRedactor(SECRET_KEYS.flatMa
 let cognitive: CognitiveFoundation;
 let agency: AgencyRuntime;
 let cognitiveRuntime: CognitiveRuntime;
+let runtime2: Runtime2 | undefined;
+const windowFocusSource = new WindowFocusSource();
 let agencyHost: AgencyHost;
 let suspended = false;
 let activityLocked=false;
@@ -239,6 +247,7 @@ function makeTheatre() {
   });
 }
 async function runTheatre(kind: SceneKind, preview = false, requested = false) {
+  if (experimental) return false;
   if(preview||requested)cognitiveRuntime.preempt('requested character performance',0);
   if(ambientBlocked(preview||requested))return false;
   if(theatre?.active || !theatreAllowed(preview,requested)) return false;
@@ -512,6 +521,7 @@ function loadDevKey() {
 const secretFor = (k: 'openai' | 'anthropic' | 'gemini') => (k === 'gemini' ? secrets.get('gemini') ?? devGeminiKey : secrets.get(k));
 const geminiKeySource = () => (secrets.get('gemini') ? 'secure-store' : devGeminiKey ? 'environment' : 'none') as 'secure-store' | 'environment' | 'none';
 function makeProvider(): LLMProvider {
+  if (experimental) throw Error('Legacy inference is disabled in runtime 2; provider integration is deferred.');
   return createProvider(settings.get().ai, secretFor, offline, {
     onModelUsed: (model, fallback) => monitor?.reportSuccess('gemini', model, fallback),
     geminiServerUrl: TEST ? process.env.CAPRI_GEMINI_SERVER_URL : undefined,
@@ -541,10 +551,11 @@ async function init() {
   const freshProfile = !fs.existsSync(path.join(dir, 'settings.json'));
   settings = new SettingsStore(dir);
   backgroundBudget = new BackgroundBudget(path.join(dir, 'background-budget.json'), () => Date.now(), () => DIALOGUE_ACTIVITY[settings.get().dialogue.activityLevel].multiplier);
-  if (freshProfile && !TEST && findCodex()) settings.update({ firstRunComplete: true, ai: { provider: 'codex', requestTimeoutSec: 120 }, character: { scale: 0.65, hideOnFullscreen: false }, voice: { ttsEnabled: false } });
+  if (freshProfile && !TEST && !experimental && findCodex()) settings.update({ firstRunComplete: true, ai: { provider: 'codex', requestTimeoutSec: 120 }, character: { scale: 0.65, hideOnFullscreen: false }, voice: { ttsEnabled: false } });
+  if (experimental && freshProfile) settings.update({ firstRunComplete: true, character: { startupIntro: false }, voice: { wakeWord: false } });
   log = new Logger(path.join(dir, 'logs'), settings.get().privacy.logLevel, undefined, undefined, TEST);
   configureCodexDiagnostics(({ usage, ...result }) => log.info('codex request', { ...result, ...(usage ? { usage: { input: usage.input_tokens, cached: usage.cached_input_tokens, output: usage.output_tokens } } : {}) }));
-  log.info('starting', { version: app.getVersion(), electron: process.versions.electron, test: TEST });
+  log.info('starting', { version: app.getVersion(), electron: process.versions.electron, test: TEST, runtime: runtimeSelection.mode });
   if (settings.repairedOnLoad.length) log.warn('settings repaired', { fields: settings.repairedOnLoad });
 
   // crash detection: a marker that only a clean shutdown removes
@@ -592,7 +603,7 @@ async function init() {
     life = new LifeService(dir, secrets, source => cognitive.revoke(source,
       () => { diagnosticTraces?.clear(); history.invalidateContext(source); modelSessions?.invalidate(source); dialogueCognition?.clear(); cancelBehavior(); convo?.stop(); memoryLearner?.pause(); },
       () => { cognitiveRuntime?.clear(); behavior?.clear(); }, [chatEvidence, ambientEvidence]),
-      () => settings.get().memory.enabled && settings.get().dialogue.localContext,
+      () => !experimental && settings.get().memory.enabled && settings.get().dialogue.localContext,
       () => settings.get().privacy.saveHistory && settings.get().memory.enabled, cognitiveStore);
   });
   notes = new NotesStore(dir);
@@ -665,10 +676,14 @@ async function init() {
     readScreen: readRequestedWindow,
     useComputer: (task,signal) => useComputer(task,{signal}),
   };
-  const learner = memoryLearner = new MemoryLearning({ cognition:dialogueCognition, settings: () => settings.get(), provider: makeProvider, memory, log, dir, relationship, personalContext, scene: conversationScene, episodes: scenes,
+  if (experimental) {
+    runtime2 = new Runtime2(actionCtx, `capricorn2:${createHash('sha256').update(dir.toLowerCase()).digest('hex').slice(0, 24)}`);
+    runtime2.initialize(listener => windowFocusSource.subscribe(listener));
+  }
+  const learner = memoryLearner = new MemoryLearning({ enabled: () => !experimental, cognition:dialogueCognition, settings: () => settings.get(), provider: makeProvider, memory, log, dir, relationship, personalContext, scene: conversationScene, episodes: scenes,
     deliveredAsides: () => scenes.recent(12).filter(x => x.kind === 'said').slice(-3).map(x => ({ text: x.text, messageId: `aside:${x.at}`, at: x.at })),
     canLearn: () => settings.get().behavior.mode !== 'sleep' && !farewell?.active && !convo.busy && !behavior.busy && !behaviorCollecting && !recording && !tourRunning && backgroundBudget.reserve('memory') });
-  convo = new Conversation({
+  convo = new Conversation({ enabled: () => !experimental,
     trace:(event,data)=>diagnosticTraces.record('direct-chat',event,data),
     sessions: modelSessions,
     localReply: text => {
@@ -724,10 +739,12 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
     log,
     onProviderResult: (ok, name, err) => { if (ok) monitor.reportSuccess(name); else monitor.reportFailure(err); },
   });
-  learner.schedule();
-  life.stage2.startLearning(() => settings.get(), () => !convo?.busy && !behavior?.busy && settings.get().behavior.mode !== 'sleep' && !developer.active);
-  honcho.start();
-  void life.start();
+  if (!experimental) {
+    learner.schedule();
+    life.stage2.startLearning(() => settings.get(), () => !convo?.busy && !behavior?.busy && settings.get().behavior.mode !== 'sleep' && !developer.active);
+    honcho.start();
+    void life.start();
+  }
   monitor = new ConnectionMonitor(makeProvider, geminiKeySource, log);
   monitor.on('changed', (st) => { toPanel('connection:status', st); cue({ type: 'connection', state: st.state }); updateTrayMenu(); });
   teleporter = new TeleportController({
@@ -840,7 +857,7 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
   }
   if (!OFFSCREEN) { createTray(); registerShortcuts(); } // off-screen test runs never touch the user's tray or hotkeys
   applyStartup(s0);
-  if (s0.voice.wakeWord && s0.voice.micPermission) wake.start();
+  if (!experimental && s0.voice.wakeWord && s0.voice.micPermission) wake.start();
 
   settings.on('changed', onSettingsChanged);
   let approvedContext=new Map(memory.approved().map(m=>[m.id,m.text]));
@@ -852,7 +869,7 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
   reminders.on('fired', onReminder);
   reminders.start();
 
-  monitor.start();
+  if (!experimental) monitor.start();
   // The presence heartbeat owns optional scheduling. Teleporter has no second loop.
   agencyHost = {
     resolve: resolveAgencyTarget, place: placeAgencyWindow, verify: verifyAgencyPlacement,
@@ -900,7 +917,7 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
   else if (!TEST && process.argv.includes('--minimize-capri')) setTimeout(() => taskbar?.command('minimize'), 800);
   else if (!TEST && process.argv.includes('--replay-intro')) setTimeout(() => { if (!opening.active) playOpening(); }, 800);
   if(TEST)(globalThis as any).__capriVisits={desktopVisits,physicalCues,taskbarVisit,adjustWithinWindow,recordDragOrigin,musicChanges,get lowerAnchor(){return lowerAnchor;},get localVisitActive(){return localVisitActive;}};
-  if (TEST) (globalThis as Record<string, unknown>).__capri = { buildDiagnosticSnapshot, diagnosticTraces, activateChatWindow, openLongTermChat, openCompanion, cognitiveRuntime, modelSessions, performanceDirector, performanceFeedback, dialogueCognition, agency, agencyHost, observeAgency, maintainAgency, cognitiveStore, get landingRest() { return landingRest; }, get falling() { return !!fallTimer; }, get theatre() { return theatre; }, runTheatre, theatreFrame, get teleporter() { return teleporter; }, get monitor() { return monitor; }, settings, convo, history, memory, honcho, life, relationship, personalContext, retiredLines, memoryLearner, conversationScene, get behavior() { return behavior; }, interactionProfile, notes, reminders, secrets, get charWin() { return charWin; }, get panelWin() { return panelWin; }, get developerWin() { return developerWin; }, bubble, get startupMs() { return startupMs; }, get speakCount() { return speakCount; }, generatedRemark, captureWindowObservation, visibleObservationWindows, sharedSceneContext, reactToOwnPanel, dropPerch, dropLower, placement, environmentalCuriosity, get lastInspection() { return lastInspection; }, get lastDialogueOutcome() { return lastDialogueOutcome; }, scenes, presentRemark, curiosityDetour, get curiosityActive() { return curiosityActive; }, outings, companionDialogue, interaction, pickupReaction, localDialogueContext, localActivity, gameActive, raiseTick, get exploringHandle() { return exploringHandle; }, get tourStage() { return tourStage; }, desktopWindows, safeForTarget, setNextVisit() { nextWindowVisit = 0; }, presenceTick, settleAfterDrop, throwCharacter, useComputer, exploreTick, get throwing() { return !!throwTimer; }, get attentionHandle() { return attentionHandle; }, get perchMode() { return perchMode; }, get nextWindowVisit() { return nextWindowVisit; }, systemIdleSec, perchTick, activities, favoriteSpots, cursorReturn, returnToCursor, setCursorIdle: (seconds: number) => { lastCursorMovedAt = Date.now() - seconds * 1000; }, pendingConfirms, log, get opening() { return opening; }, get taskbar() { return taskbar; }, playOpening, minimizeCapri, restoreCapri, company, visit, applyCompanyControl, presenceDebug: () => ({ target: String(lastDesktopHandle), desktop: lastDesktop, tracked: !!trackedWindowFor(lastDesktopHandle), request: !!behavior?.busy, revision: placementRevision, watched: String(watchedHandle), encounter: encounters.current }) };
+  if (TEST) (globalThis as Record<string, unknown>).__capri = { runtime2, runtimeSelection, windowFocusSource, buildDiagnosticSnapshot, diagnosticTraces, activateChatWindow, openLongTermChat, openCompanion, cognitiveRuntime, modelSessions, performanceDirector, performanceFeedback, dialogueCognition, agency, agencyHost, observeAgency, maintainAgency, cognitiveStore, get landingRest() { return landingRest; }, get falling() { return !!fallTimer; }, get theatre() { return theatre; }, runTheatre, theatreFrame, get teleporter() { return teleporter; }, get monitor() { return monitor; }, settings, convo, history, memory, honcho, life, relationship, personalContext, retiredLines, memoryLearner, conversationScene, get behavior() { return behavior; }, interactionProfile, notes, reminders, secrets, get charWin() { return charWin; }, get panelWin() { return panelWin; }, get developerWin() { return developerWin; }, bubble, get startupMs() { return startupMs; }, get speakCount() { return speakCount; }, generatedRemark, captureWindowObservation, visibleObservationWindows, sharedSceneContext, reactToOwnPanel, dropPerch, dropLower, placement, environmentalCuriosity, get lastInspection() { return lastInspection; }, get lastDialogueOutcome() { return lastDialogueOutcome; }, scenes, presentRemark, curiosityDetour, get curiosityActive() { return curiosityActive; }, outings, companionDialogue, interaction, pickupReaction, localDialogueContext, localActivity, gameActive, raiseTick, get exploringHandle() { return exploringHandle; }, get tourStage() { return tourStage; }, desktopWindows, safeForTarget, setNextVisit() { nextWindowVisit = 0; }, presenceTick, settleAfterDrop, throwCharacter, useComputer, exploreTick, get throwing() { return !!throwTimer; }, get attentionHandle() { return attentionHandle; }, get perchMode() { return perchMode; }, get nextWindowVisit() { return nextWindowVisit; }, systemIdleSec, perchTick, activities, favoriteSpots, cursorReturn, returnToCursor, setCursorIdle: (seconds: number) => { lastCursorMovedAt = Date.now() - seconds * 1000; }, pendingConfirms, log, get opening() { return opening; }, get taskbar() { return taskbar; }, playOpening, minimizeCapri, restoreCapri, company, visit, applyCompanyControl, presenceDebug: () => ({ target: String(lastDesktopHandle), desktop: lastDesktop, tracked: !!trackedWindowFor(lastDesktopHandle), request: !!behavior?.busy, revision: placementRevision, watched: String(watchedHandle), encounter: encounters.current }) };
 }
 
 // ---------------------------------------------------------------- desktop-pet handling: drop onto a ledge, throw
@@ -1084,6 +1101,7 @@ function reclampCharacter() {
 }
 
 function reactToOwnPanel(tab:string){
+  if (experimental) return;
   if(!['settings','attention','connections','model','voice','character','memory','privacy','system','developer'].includes(tab))return;
   if(ambientBlocked()||company.blocked()||bubble.state.composer||!settings.get().voice.interactionLines)return;
   void generatedRemark('own_panel',`The user opened Capri's own ${tab} page. No setting has necessarily changed. Only speak if this adds a specific thought to the current exchange; navigation alone needs no acknowledgement.`);
@@ -1387,6 +1405,7 @@ function updateAttention() {
 let lastCompanionEvent: LifeEvent | null = null;
 let lastCompanionEventAt = 0;
 function interaction(kind: 'pat' | 'poke') {
+  if (experimental) return;
   cognitiveRuntime.preempt(kind,0);
   if(touchBurstTimer){clearTimeout(touchBurstTimer);touchBurstTimer=null;}
   theatre?.cancel();
@@ -1655,6 +1674,7 @@ function ambientRequestWaitSeconds() {
 }
 let lastInspection: { handle: bigint; title: string; at: number; points: InterestPoint[]; bounds?: DRect } | null = null;
 function behaviorAllowed(event?: BehaviorEvent) {
+  if (experimental) return false;
   if (!settings || !bubble || !convo || developer.active && !(event?.kind === 'trigger' && event.context && (event.context as { developer?: boolean }).developer) || devAbsence) return false;
   const direct = event?.kind === 'trigger' ? event.direct : event?.kind === 'interact';
   return !convo.busy && !recording && !gameActive() && !userHidden && !fullscreenHidden && !company.focused()
@@ -1714,6 +1734,7 @@ function expressBehavior(expression: Expression, event: BehaviorEvent) {
 }
 
 async function generatedRemark(event: string, detail = '', options: { target?: bigint; placement?: number; interactionGeneration?: number; interactionDevelopment?:string; developer?: boolean; song?:PlayingTrack; personalSubject?: string; personalCommitmentId?: string; personalProjectId?: string } = {}) {
+  if (experimental) return;
   let reportRevision = behaviorCollectionRevision;
   const waiting = (reason: string) => { if (reportRevision === behaviorCollectionRevision) {lastDialogueOutcome = `${event}: waiting (${reason})`;if(options.target&&event==='inspect')environmentalCuriosity.status(explorationKey(observedWindow(options.target)),reason,Date.now());} };
   const direct = cognitiveRuntime.isDirect(event,!!options.developer);
@@ -2012,7 +2033,7 @@ function onSettingsChanged(s: Settings) {
   const privacySignature = JSON.stringify([s.memory.enabled, s.privacy.saveHistory, s.dialogue.localContext, s.actions.policies.read_screen,s.privacy.activityAwareness.enabled,s.privacy.activityAwareness.retentionDays,s.memory.historyRetentionDays]);
   if (privacySignature !== behaviorPrivacySignature) {
     diagnosticTraces?.clear(); modelSessions?.clear(); cognitiveRuntime?.clear();
-    if (life) { cancelBehavior(); convo?.stop(); conversationScene?.invalidateContext(); chatEvidence.reset(); ambientEvidence.reset(); if (!s.memory.enabled || !s.privacy.saveHistory) memoryLearner?.discard(); else memoryLearner?.pause(); void life.start(); life.ledger.flush(); }
+    if (life) { cancelBehavior(); convo?.stop(); conversationScene?.invalidateContext(); chatEvidence.reset(); ambientEvidence.reset(); if (!s.memory.enabled || !s.privacy.saveHistory) memoryLearner?.discard(); else memoryLearner?.pause(); if (!experimental) void life.start(); life.ledger.flush(); }
     personalContext?.privacyChanged();
     behaviorPrivacySignature = privacySignature; cancelBehavior(); behavior?.privacyChanged(); environmentalCuriosity.clear(); lastInspection = null;
     if (!s.dialogue.localContext) { behavior?.clear(); lastObservedDesktop = ''; }
@@ -2061,7 +2082,7 @@ function onSettingsChanged(s: Settings) {
   }
   toPanel('settings:changed', s);
   applyStartup(s);
-  if (s.voice.wakeWord && s.voice.micPermission) wake.start(); else wake.stop();
+  if (!experimental && s.voice.wakeWord && s.voice.micPermission) wake.start(); else wake.stop();
   updateTrayMenu();
 }
 
@@ -2420,6 +2441,7 @@ async function captureScreen(): Promise<Screen> {
 /** She carries out a task with the real mouse and keyboard. Only Esc stops a task the user asked for; while
  * exploring, any mouse movement or keypress of the user's own ends it too. */
 async function useComputer(task: string, opts: { explore?: boolean; maxSteps?: number; signal?:AbortSignal } = {}): Promise<{ ok: boolean; summary: string; steps: number; verified?:boolean }> {
+  if (experimental) return { ok: false, summary: 'Computer cognition is deferred in runtime 2.', steps: 0 };
   const key = secretFor('gemini');
   const viaCodex = settings.get().ai.provider === 'codex';
   if (!key && !viaCodex) return { ok: false, summary: 'Using the computer needs Codex (your account) or a Gemini API key in Model settings.', steps: 0 };
@@ -2540,6 +2562,7 @@ let tourRunning = false;
 let tourStage: 'arriving' | 'roaming' | 'perching' | 'resting' = 'resting';
 let outingThought: { detail: string; at: number; sceneRevision: number } | null = null;
 async function exploreTick(idleSec: number, developerSignal?: AbortSignal, trialDirector?: ExplorationDirector, requestedTarget?: bigint, newlyOpened = false) {
+  if (experimental) return;
   observeAgency();
   if (loungeHeld() && !developerSignal && !(newlyOpened&&lowerAnchor)) return;
   const s = settings.get();
@@ -2731,6 +2754,15 @@ function visibleObservationWindows(now=Date.now()) {
 let previousUserIdle = 0;
 let activities: ActivityDirector;
 function presenceTick() {
+  if (experimental) {
+    // Same Win32 collector, before legacy semantic admission or interpretation.
+    if (runtime2?.status !== 'active' || suspended || activityLocked || process.env.CAPRI_V2_WINDOW_FOCUS === '0' || settings.get().actions.policies.read_screen === 'deny') return;
+    const handle = TEST && (globalThis as any).__capriForegroundHandle !== undefined ? (globalThis as any).__capriForegroundHandle as bigint : foregroundHandle();
+    const external = handle && !ownHandles().includes(handle) ? handle : null;
+    const info = external ? windowInfo(external) : { title: '', process: '' };
+    windowFocusSource.sample({ handle: external ? String(external) : null, ...info });
+    return;
+  }
   if(agency){observeAgency();maintainAgency();agency.tick();}
   life?.ledger.maintain();life?.stage2.maintain();
   company.pruneWindows(new Set(desktopWindows().map(w=>String(w.handle))));
@@ -3581,7 +3613,10 @@ function cleanup() {
   try { fs.rmSync(markerFile(), { force: true }); } catch { /* */ }
   log?.info('clean shutdown');
 }
-function restart() { cleanup(); app.relaunch(); app.exit(0); }
+function restart() {
+  if (runtime2 && runtime2.status !== 'stopped') { void runtime2.shutdown().then(restart); return; }
+  cleanup(); app.relaunch(); app.exit(0);
+}
 async function resetAll() {
   convo.stop();
   environmentalCuriosity.clear(); lastInspection = null; void honcho.forget(); memoryLearner.discard(); modelSessions?.clear(); dialogueCognition?.clear(); performanceFeedback?.clear(); cognitive.clearActivity(); agency?.clear(); history.clear(); personalContext.clear(); scenes.clear(); conversationScene.clear(); behavior?.clear(); interactionProfile.clear(); relationship.clear(); retiredLines.clear(); clearPingHistory(); memory.clear(); notes.clear(); reminders.clear(); secrets.clear();
@@ -3593,7 +3628,12 @@ async function resetAll() {
 }
 
 app.on('before-quit', event => {
-  if (!quitting && !farewellExit && farewell && (!TEST || process.env.CAPRI_QUIT_TEST === '1')) {
+  if (runtime2 && runtime2.status !== 'stopped') {
+    event.preventDefault();
+    void runtime2.shutdown().then(() => app.quit());
+    return;
+  }
+  if (!experimental && !quitting && !farewellExit && farewell && (!TEST || process.env.CAPRI_QUIT_TEST === '1')) {
     event.preventDefault(); void farewell.start().catch(() => { farewellExit = true; app.quit(); }); return;
   }
   cleanup();

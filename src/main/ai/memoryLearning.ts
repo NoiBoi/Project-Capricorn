@@ -63,6 +63,7 @@ export class MemoryLearning {
     if (job && text.trim()) { job.assistant = { text: text.slice(0, 4000), messageId: replyId, at }; this.persistQueue(); }
   }
   enqueue(text: string, messageId: string) {
+    if (this.d.enabled?.() === false) return;
     this.pause();
     if (!this.d.settings().memory.enabled || !this.d.settings().memory.autoLearn) return;
     if (text.length < 3 || text.length > 12000 || /\b(off the record|don't (?:save|remember) (?:this|anything)|do not (?:save|remember) (?:this|anything))\b/i.test(text)) return;
@@ -71,6 +72,7 @@ export class MemoryLearning {
     this.persistQueue();
   }
   schedule(delay = this.d.settings().ai.provider === 'codex' ? 60000 : 2000) {
+    if (this.d.enabled?.() === false) return;
     const due = Date.now() + delay;
     // Frequent desktop observations must not keep pushing pending learning into the future.
     if (this.timer && this.timerDue <= due) return;
@@ -103,8 +105,8 @@ export class MemoryLearning {
       if (!ctrl.signal.aborted) this.schedule(Math.max(this.d.settings().ai.provider === 'codex' ? 60000 : 2000, this.retryDelay));
     }
   }
-  constructor(private d: { settings(): Settings; provider(): LLMProvider; memory: MemoryStore; log: Logger; canLearn?(): boolean; dir?: string; relationship?: RelationshipStore; scene?: ConversationScene; episodes?: CompanionScenes; personalContext?: PersonalContext; cognition?:DialogueCognition; deliveredAsides?(): { text: string; messageId: string; at: number }[] }) {
-    if (!d.dir) return;
+  constructor(private d: { enabled?(): boolean; settings(): Settings; provider(): LLMProvider; memory: MemoryStore; log: Logger; canLearn?(): boolean; dir?: string; relationship?: RelationshipStore; scene?: ConversationScene; episodes?: CompanionScenes; personalContext?: PersonalContext; cognition?:DialogueCognition; deliveredAsides?(): { text: string; messageId: string; at: number }[] }) {
+    if (d.enabled?.() === false || !d.dir) return;
     this.queueFile = path.join(d.dir, 'memory-learning-queue.json');
     const s = d.settings();
     if (s.memory.enabled && s.memory.autoLearn && s.privacy.saveHistory) {
@@ -120,6 +122,7 @@ export class MemoryLearning {
   privacyChanged() { this.persistQueue(); }
   async learn(text: string, messageId: string, signal: AbortSignal, sources: { text: string; messageId: string; at?: number; assistant?: { text: string; messageId: string; at?: number } }[] = [{ text, messageId }]): Promise<void> {
     this.context = '';
+    if (this.d.enabled?.() === false) return;
     const s = this.d.settings();
     if (!s.memory.enabled || !s.memory.autoLearn || text.length < 3 || text.length > 12000 || signal.aborted) return;
     if (/\b(off the record|don't (?:save|remember) (?:this|anything)|do not (?:save|remember) (?:this|anything))\b/i.test(text)) return;

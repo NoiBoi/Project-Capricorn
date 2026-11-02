@@ -16,6 +16,7 @@ import type { ExecutionReceipt, ModelSession } from '../../core/contracts';
 import { createHash } from 'node:crypto';
 
 export interface ConversationDeps {
+  enabled?(): boolean;
   trace?(event:string,data:unknown):void;
   sessions?: ConversationSessions;
   settings(): Settings;
@@ -78,6 +79,7 @@ export class Conversation {
   }
 
   async send(text: string, opts: { viaVoice?: boolean } = {}): Promise<string> {
+    if (this.d.enabled?.() === false) throw Error('Legacy conversation is disabled in runtime 2; dialogue integration is deferred.');
     const clean = text.replace(/\u0000/g, '').trim().slice(0, 20_000);
     if (!clean) throw new Error('Empty message');
     this.d.pauseLearning?.();
