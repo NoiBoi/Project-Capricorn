@@ -12,6 +12,7 @@ fs.mkdirSync(path.join(out,'renderer'), { recursive: true });
 const common = { bundle: true, write: false, loader: { '.md': 'text' }, sourcemap: prod ? false : 'linked', minify: prod, target: 'es2023', logLevel: 'warning', legalComments: 'none' };
 
 const bundles = await Promise.all([
+  build({ ...common, entryPoints: [path.join(root, 'src/main/runtime2/windowFocusArchiveWorker.ts')], outfile: path.join(out, 'main/runtime2/windowFocusArchiveWorker.js'), platform: 'node', format: 'cjs' }),
   build({ ...common, entryPoints: [path.join(root, 'src/main/index.ts')], outfile: path.join(out, 'main/index.js'), platform: 'node', format: 'cjs', external: ['electron', 'koffi'] }),
   build({ ...common, entryPoints: [path.join(root, 'src/preload/preload.ts')], outfile: path.join(out, 'preload/preload.js'), platform: 'node', format: 'cjs', external: ['electron'] }),
   build({ ...common, entryPoints: { theatre: path.join(root, 'src/renderer/theatre.ts'), trail: path.join(root, 'src/renderer/trail.ts'), intro: path.join(root, 'src/renderer/intro.ts'), taskbar: path.join(root, 'src/renderer/taskbar.ts'), character: path.join(root, 'src/renderer/character/main.ts'), panel: path.join(root, 'src/renderer/panel/main.ts'), panelStartup: path.join(root, 'src/renderer/panel/startup.ts'), bubble: path.join(root, 'src/renderer/bubble.ts') }, outdir: path.join(out, 'renderer'), platform: 'browser', format: 'iife' }),

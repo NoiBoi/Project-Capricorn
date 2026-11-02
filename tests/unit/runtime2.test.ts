@@ -1,7 +1,8 @@
+import { archiveWorkerPath } from '../helpers/runtime2Archive';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { selectRuntime, assertSyntheticProfile } from '../../src/main/runtime2/selection';
 import { Runtime2 } from '../../src/main/runtime2/runtime';
 import { WindowFocusSource } from '../../src/main/runtime2/windowFocus';
@@ -9,11 +10,16 @@ import { TypedCapabilityExecutor, type CapabilityDefinition } from '../../src/co
 
 const focus = { handle: '42', title: 'Untrusted window title', process: 'editor.exe', pid: 12 };
 const call = { id: 'move:1', capability: 'test.move', fingerprint: 'target:42', dependencies: ['desktop:foreground'] };
-function fixture() {
+const cleanups: (() => Promise<void>)[] = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
+async function fixture() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'capri-runtime2-'));
+  const profile = selectRuntime({ CAPRI_RUNTIME: '2' }, home).profile!;
   const executor = new TypedCapabilityExecutor();
-  const runtime = new Runtime2({ executor }, 'synthetic:primary');
+  const runtime = new Runtime2({ executor }, 'synthetic:primary', profile, { workerPath: archiveWorkerPath });
   const source = new WindowFocusSource();
-  runtime.initialize(listener => source.subscribe(listener));
+  cleanups.push(async () => { await runtime.shutdown(); fs.rmSync(home, { recursive: true, force: true }); });
+  await runtime.initialize(listener => source.subscribe(listener));
   return { runtime, source };
 }
 
@@ -39,7 +45,7 @@ describe('runtime 2 foundation', () => {
   });
 
   it('keeps original metadata, timestamp and loss markers without semantic admission', async () => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     source.sample(focus, 100); source.sample(focus, 200);
     const snapshot = runtime.snapshot();
     expect(snapshot.id).toBe('synthetic:primary');
@@ -58,7 +64,7 @@ describe('runtime 2 foundation', () => {
   });
 
   it('reuses validation, permissions, outcome verification and replay barriers', async () => {
-    const { runtime } = fixture();
+    const { runtime } = await fixture();
     const execute = vi.fn(async () => ({ placed: true }));
     const definition: CapabilityDefinition<string, { placed: boolean }> = {
       parse: value => { if (typeof value !== 'string') throw Error('invalid target'); return value; },
@@ -76,7 +82,7 @@ describe('runtime 2 foundation', () => {
   });
 
   it('reports collector truncation and unavailable metadata explicitly', async () => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     source.sample({ ...focus, title: 'x'.repeat(1023), process: '' }, 100);
     expect(runtime.snapshot().items[0]).toMatchObject({ observation: { loss: {
       truncated: true, missing: expect.arrayContaining(['window-title-may-be-truncated', 'process-metadata-unavailable']),
@@ -89,7 +95,7 @@ describe('runtime 2 foundation', () => {
   });
 
   it('cancels and settles in-flight work without accepting late observations or results', async () => {
-    const { runtime, source } = fixture();
+    const { runtime, source } = await fixture();
     let finish!: () => void;
     let signal!: AbortSignal;
     const task = runtime.execute({ call, arguments: '42' }, {

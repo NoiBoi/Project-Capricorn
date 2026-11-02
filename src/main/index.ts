@@ -677,8 +677,8 @@ async function init() {
     useComputer: (task,signal) => useComputer(task,{signal}),
   };
   if (experimental) {
-    runtime2 = new Runtime2(actionCtx, `capricorn2:${createHash('sha256').update(dir.toLowerCase()).digest('hex').slice(0, 24)}`);
-    runtime2.initialize(listener => windowFocusSource.subscribe(listener));
+    runtime2 = new Runtime2(actionCtx, `capricorn2:${createHash('sha256').update(dir.toLowerCase()).digest('hex').slice(0, 24)}`, dir);
+    await runtime2.initialize(listener => windowFocusSource.subscribe(listener));
   }
   const learner = memoryLearner = new MemoryLearning({ enabled: () => !experimental, cognition:dialogueCognition, settings: () => settings.get(), provider: makeProvider, memory, log, dir, relationship, personalContext, scene: conversationScene, episodes: scenes,
     deliveredAsides: () => scenes.recent(12).filter(x => x.kind === 'said').slice(-3).map(x => ({ text: x.text, messageId: `aside:${x.at}`, at: x.at })),

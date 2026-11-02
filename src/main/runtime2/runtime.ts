@@ -1,32 +1,60 @@
+import { WindowFocusArchive, type ArchiveOptions } from './windowFocusArchive';
+import type { ArchiveQuery } from './windowFocusArchiveContracts';
 import { randomUUID } from 'node:crypto';
 import type { ActionContext } from '../actions/registry';
 import { TypedCapabilityExecutor, type CapabilityDefinition } from '../../core/capabilities';
 import type { ConversationItem, LogicalConversation, Observation, ToolRequest, ToolExecution } from './contracts';
 
-/** Phase 1 is intentionally in-memory: no inference, archive, memory DB or scheduler. */
+/** Observation chronology backed by an isolated worker-owned archive; no cognition. */
 export class Runtime2 {
-  private state: 'new' | 'active' | 'stopping' | 'stopped' = 'new';
+  private state: 'new' | 'initializing' | 'active' | 'stopping' | 'stopped' = 'new';
   private conversation: LogicalConversation;
   private controller = new AbortController();
   private unsubscribe?: () => void;
   private pending = new Set<Promise<ToolExecution>>();
   private shutdownTask?: Promise<void>;
-  constructor(private actions: Pick<ActionContext, 'executor'>, conversationId: string = randomUUID()) {
+  private archive: WindowFocusArchive;
+  private initialization?: Promise<void>;
+  constructor(private actions: Pick<ActionContext, 'executor'>, conversationId: string, profile: string, archiveOptions: ArchiveOptions = {}) {
     if (!(actions.executor instanceof TypedCapabilityExecutor)) throw Error('Runtime 2 requires the existing capability executor.');
+    this.archive = new WindowFocusArchive(profile, archiveOptions);
     this.conversation = { id: conversationId, items: [], evictedItems: 0 };
   }
-  initialize(subscribe: (listener: (observation: Observation) => void) => () => void) {
+  initialize(subscribe: (listener: (observation: Observation) => void) => () => void): Promise<void> {
     if (this.state !== 'new') throw Error('Runtime already initialized or stopped.');
-    this.state = 'active';
-    try { this.unsubscribe = subscribe(observation => {
-      if (this.state !== 'active') return;
-      this.append({ id: observation.id, at: observation.at, kind: 'observation', observation: structuredClone(observation) });
-    }); } catch (error) { this.state = 'stopped'; this.controller.abort(); throw error; }
+    this.state = 'initializing';
+    this.initialization = (async () => {
+      try {
+        await this.archive.initialize();
+        const observations = await this.archive.restore();
+        if (this.state !== 'initializing') return;
+        for (const observation of observations) this.append({ id: observation.id, at: observation.at, kind: 'observation', observation });
+        this.state = 'active';
+        this.unsubscribe = subscribe(observation => {
+          if (this.state !== 'active') return;
+          const copy = structuredClone(observation);
+          this.append({ id: copy.id, at: copy.at, kind: 'observation', observation: copy });
+          // write() snapshots into the worker message synchronously. Failures are
+          // counted by the archive and remain visible through archiveHealth.
+          void this.archive.write(copy).catch(() => {});
+        });
+      } catch (error) {
+        if (this.state !== 'stopping') this.state = 'stopped';
+        this.controller.abort();
+        await this.archive.close();
+        throw error;
+      }
+    })();
+    return this.initialization;
   }
+  get archiveHealth() { return this.archive.health; }
+  recentObservations(query: ArchiveQuery = {}) { return this.archive.recent(query); }
+  observationById(id: string) { return this.archive.get(id); }
+  archiveStatistics() { return this.archive.stats(); }
   get status() { return this.state; }
   private append(item: ConversationItem) {
     this.conversation.items.push(item);
-    // Bounded development buffer, explicitly not the future experience archive.
+    // The archive retains history independently of this working context window.
     if (this.conversation.items.length > 256) { this.conversation.items.shift(); this.conversation.evictedItems++; }
   }
   snapshot(): LogicalConversation { return structuredClone(this.conversation); }
@@ -47,7 +75,12 @@ export class Runtime2 {
     this.state = 'stopping';
     this.controller.abort();
     this.unsubscribe?.(); this.unsubscribe = undefined;
-    this.shutdownTask = Promise.allSettled([...this.pending]).then(() => { this.state = 'stopped'; });
+    this.shutdownTask = (async () => {
+      await this.initialization?.catch(() => {});
+      await Promise.allSettled([...this.pending]);
+      await this.archive.close();
+      this.state = 'stopped';
+    })();
     return this.shutdownTask;
   }
 }
