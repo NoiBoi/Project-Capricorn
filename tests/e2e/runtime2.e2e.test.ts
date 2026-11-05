@@ -13,7 +13,7 @@ it('boots the isolated runtime in the existing Electron shell and blocks legacy 
   const dir = selectRuntime(env, os.homedir()).profile!;
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ firstRunComplete: true,
-    ai: { provider: 'offline' }, memory: { enabled: false, autoLearn: true }, dialogue: { localContext: false },
+    ai: { provider: 'offline' }, memory: { enabled: false, autoLearn: true }, dialogue: { localContext: true },
     actions: { policies: { read_screen: 'allow' } }, character: { startupIntro: false },
     voice: { ttsEnabled: false }, teleport: { auto: false, effects: false },
   }));
@@ -28,6 +28,7 @@ it('boots the isolated runtime in the existing Electron shell and blocks legacy 
       try { await a.convo.send('Remember this and move to another window.'); } catch { chatBlocked = true; }
       // Even explicitly enabled legacy learning cannot become a second owner.
       a.settings.update({ memory: { enabled: true, autoLearn: true } });
+      await a.runtime2.whenSettled();
       let learningCalls = 0;
       a.memoryLearner.d.provider = () => { learningCalls++; throw Error('Legacy learner called'); };
       a.memoryLearner.enqueue('My preference is synthetic.', 'synthetic-message');
@@ -35,7 +36,9 @@ it('boots the isolated runtime in the existing Electron shell and blocks legacy 
       a.memoryLearner.schedule(0);
       const ambient = await a.behavior.dispatch({ kind: 'interact' });
       // A real native handle when available; an empty foreground is also a host observation.
-      g.__capriForegroundHandle = a.desktopWindows()[0]?.handle ?? 0n;
+      g.__capriWindowsOverride = [{ handle: 777n, rect: { x: 100, y: 180, width: 700, height: 500 } }];
+      g.__capriWindowInfo = { '777': { title: 'Synthetic archive fixture', process: 'fixture.exe' } };
+      g.__capriForegroundHandle = 777n;
       a.presenceTick();
       a.windowFocusSource.sample({ handle: 'synthetic', title: 'Phase 2 restart evidence', process: 'archive-test.exe' }, 12345);
       const beforeStop = a.runtime2.snapshot();

@@ -1,14 +1,26 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import { safePage, cleanEvidence } from '../../shared/lifeContext';
+import { safePage, cleanEvidence, chromeSiteAllowed } from '../../shared/lifeContext';
 import { LifeContext } from './context';
 import { PageSection } from './perception';
 const Page = z.object({ recordId:z.string().min(1).max(100), revision:z.number().int().nonnegative(), occurredAt:z.number().finite(), url:z.string().max(2000), title:z.string().max(300), headings:z.array(z.string().max(200)).max(8), description:z.string().max(500).default(''), selection:z.string().max(1500).default(''), excerpt:z.string().max(1500).default(''), mode:z.enum(['metadata','selection','excerpt','semantic','deep']).default('metadata'), sections:z.array(PageSection).max(80).default([]), playback:z.object({state:z.enum(['playing','paused','ended']),position:z.number().min(0).max(864000),duration:z.number().min(0).max(864000).nullable()}).strict().optional(), incognito:z.literal(false), focused:z.literal(true), visible:z.literal(true), operation:z.enum(['upsert','delete']).default('upsert') }).strict();
 export const ChromePage = Page;
 /** Authenticated loopback, fixed Host and exact extension Origin. No browser CORS wildcard. */
 export class ChromeBridge {
+  private lastIntake: 'extension' | 'controlled-test' | null = null;
+  private lastAcceptedAt?: number;
+  preflight(url?: string) {
+    const source = this.life.source('chrome'), credentials = this.credentials();
+    const paired = /^[a-p]{32}$/.test(credentials.extensionId ?? '') && (credentials.token?.length ?? 0) >= 32;
+    const safe = url === undefined ? undefined : safePage(url);
+    const authorized = !!source?.permissions.collect && !source.paused && !!source.permissions.content && !!source.permissions.live && (url === undefined || !!safe && chromeSiteAllowed(source.sites, safe));
+    return { status: !authorized ? 'source-disallowed' : paired && this.life.bridge.state === 'listening' ? 'paired-authorized' : 'unavailable-or-unpaired', paired, authorized, transport: this.life.bridge.state, lastIntake: this.lastIntake, lastAcceptedAt: this.lastAcceptedAt, deliveringRecently: this.lastIntake === 'extension' && !!this.lastAcceptedAt && Date.now() - this.lastAcceptedAt < 90000 };
+  }
   private server?: http.Server; private last = 0; private serial = 0;
+  private rawSink?: (page: z.infer<typeof Page>, intake: 'extension' | 'controlled-test') => boolean | Promise<boolean>;
+  private rawRevisions = new Map<string, number>();
+  setRawSink(sink: NonNullable<ChromeBridge['rawSink']>) { this.rawSink = sink; }
   constructor(private life: LifeContext, private credentials: () => { token: string; extensionId: string }, private port = 43129) {}
   async start() {
     this.stop(); const serial = ++this.serial;
@@ -19,23 +31,38 @@ export class ChromeBridge {
     const server = this.server = http.createServer((req,res) => {
       const origin = `chrome-extension://${credentials.extensionId}`;
       const reject = (code:number) => { res.writeHead(code); res.end(); };
-      if (req.headers.host !== `127.0.0.1:${this.port}` || req.headers.origin !== origin || req.url !== '/v1/page') return reject(403);
+      if (req.headers.host !== `127.0.0.1:${this.port}` || req.headers.origin !== origin || !['/v1/page','/v1/status'].includes(req.url ?? '')) return reject(403);
       res.setHeader('Access-Control-Allow-Origin',origin); res.setHeader('Vary','Origin');
-      if (req.method === 'OPTIONS') { res.setHeader('Access-Control-Allow-Methods','POST'); res.setHeader('Access-Control-Allow-Headers','authorization,content-type'); return reject(204); }
+      if (req.method === 'OPTIONS') { res.setHeader('Access-Control-Allow-Methods','POST, GET'); res.setHeader('Access-Control-Allow-Headers','authorization,content-type'); return reject(204); }
       const provided = Buffer.from(req.headers.authorization ?? ''), expected = Buffer.from('Bearer '+credentials.token);
-      if (req.method !== 'POST' || provided.length !== expected.length || !timingSafeEqual(provided,expected) || !req.headers['content-type']?.startsWith('application/json')) return reject(401);
+      if (provided.length !== expected.length || !timingSafeEqual(provided,expected)) return reject(401);
+      if (req.method === 'POST' && req.url === '/v1/status') { res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); res.end(JSON.stringify({ paired: true })); return; }
+      if (req.method !== 'POST' || req.url !== '/v1/page' || !req.headers['content-type']?.startsWith('application/json')) return reject(401);
       if (Date.now()-this.last < 200) return reject(429); this.last = Date.now();
       let size = 0, body = ''; req.setTimeout(3000,()=>req.destroy());
       req.on('data', chunk => { size += chunk.length; if (size>256000) { req.destroy(); return; } body += chunk.toString(); });
-      req.on('end',()=>{ try { const data=Page.parse(JSON.parse(body)); const accepted=this.accept(data); res.writeHead(accepted?202:204); res.end(); } catch { reject(400); } });
+      req.on('end',async()=>{ try { const data=Page.parse(JSON.parse(body)); const accepted=await this.accept(data, 'extension'); res.writeHead(accepted?202:204); res.end(); } catch { reject(400); } });
     });
     server.maxConnections = 4; server.headersTimeout = 4000; server.requestTimeout = 4000;
     await new Promise<void>(resolve => { server.once('error',()=>{if(serial===this.serial)this.life.bridge.state='unavailable: loopback port in use';resolve();}); server.listen(this.port,'127.0.0.1',()=>{if(serial===this.serial)this.life.bridge.state='listening';resolve();}); });
   }
-  accept(input: z.input<typeof Page>) {
+  accept(input: z.input<typeof Page>, intake: 'extension' | 'controlled-test' = 'controlled-test') {
     const page = Page.parse(input), s=this.life.source('chrome'); if (!s?.permissions.collect || s.paused) return false;
-    const url=safePage(page.url); if (!url || url.length>2000 || !s.sites.includes(new URL(url).origin)) return false;
+    const url=safePage(page.url); if (!url || url.length>2000 || !chromeSiteAllowed(s.sites, url)) return false;
     const now=Date.now(); if (Math.abs(now-page.occurredAt)>120000||!this.life.acceptsRevision('chrome',page.recordId,page.revision)) return false;
+    if (this.rawSink) {
+      if (page.revision <= (this.rawRevisions.get(page.recordId) ?? -1)) return false;
+      const content = s.permissions.content;
+      const sanitized = { ...page, url, title: cleanEvidence(page.title,300), headings: page.headings.map(h => cleanEvidence(h,200)), description: cleanEvidence(page.description,500), selection: content ? cleanEvidence(page.selection,1500) : '', excerpt: content ? cleanEvidence(page.excerpt,1500) : '', sections: content ? page.sections.map(section => ({ ...section, path: cleanEvidence(section.path,300), text: cleanEvidence(section.text.replace(/\r?\n/g,'\u2028'),3000).replace(/\u2028/g,'\n') })) : [] };
+      const finish = (accepted: boolean) => {
+        if (!accepted) return false;
+        this.lastIntake = intake;
+        this.lastAcceptedAt = Date.now();
+        this.rawRevisions.set(page.recordId, Math.max(page.revision, this.rawRevisions.get(page.recordId) ?? -1)); if (this.rawRevisions.size > 100) this.rawRevisions.delete(this.rawRevisions.keys().next().value!);
+        return true;
+      };
+      const accepted = this.rawSink(sanitized, intake); return accepted instanceof Promise ? accepted.then(finish) : finish(accepted);
+    }
     const sections=page.operation!=='delete'&&s.permissions.content&&['semantic','deep'].includes(page.mode)?page.sections.map(section=>({...section,path:cleanEvidence(section.path,300),text:cleanEvidence(section.text.replace(/\r?\n/g,'\u2028'),3000).replace(/\u2028/g,'\n')})):[];
     const stored=this.life.pageSnapshot(url);
     const hash=sections.length?this.life.snapshotPage(url,page.revision,sections):stored?.hash;

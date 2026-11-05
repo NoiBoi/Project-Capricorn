@@ -17,7 +17,8 @@ export function selectRuntime(env: NodeJS.ProcessEnv, home: string, packaged = f
 export function assertSyntheticProfile(profile: string) {
   // A junction/symlink must not redirect synthetic writes into the real profile.
   for (let p = path.resolve(profile); ; p = path.dirname(p)) {
-    if (fs.existsSync(p) && fs.lstatSync(p).isSymbolicLink()) throw Error('Synthetic profile cannot traverse a link.');
+    try { if (fs.lstatSync(p).isSymbolicLink()) throw Error('Synthetic profile cannot traverse a link.'); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     if (path.dirname(p) === p) break;
   }
 }

@@ -5,10 +5,13 @@ export interface Observation {
   id: string;
   at: number;
   source: string;
-  modality: 'window-metadata';
+  modality: 'window-metadata' | 'browser-page' | 'screenshot' | 'application-text' | 'accessibility';
+  sourceIdentity?: string;
+  related?: string[];
+  disclosure?: { source: 'screen' | 'chrome'; url?: string; retain: boolean; expiresAt?: number; retainUntil?: number };
   original?: EvidenceReference;
-  content: { handle: string | null; title: string; process: string; pid?: number };
-  provenance: { authority: 'host'; collector: 'win32.foreground'; metadata: Record<string, string> };
+  content: { handle: string | null; title: string; process: string; pid?: number; url?: string; text?: string; sections?: { kind: string; level: number; path: string; text: string }[]; evidenceId?: string; revision?: number; changedSections?: number[]; playback?: { state: 'playing' | 'paused' | 'ended'; duration: number | null } };
+  provenance: { authority: 'host'; collector: string; metadata: Record<string, string> };
   loss: { truncated: boolean; missing: string[] };
 }
 export type ConversationItem = { id: string; at: number } & (

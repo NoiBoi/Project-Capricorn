@@ -1,7 +1,8 @@
-// Optional-site script. No page text is sent in messages. At most one hint per 5s.
+// Optional-site script. No page text is sent in messages. Coalesce mutations; prompt hints on load and tab visibility.
 if(!globalThis.__capriObserver){
   globalThis.__capriObserver=true;let last=0,timer;
-  const hint=()=>{clearTimeout(timer);timer=setTimeout(()=>{if(document.visibilityState==='visible'&&Date.now()-last>5000){last=Date.now();chrome.runtime.sendMessage({type:'dirty'}).catch(()=>{});}},1500);};
+  const hint=()=>{if(timer)return;timer=setTimeout(()=>{timer=undefined;if(document.visibilityState==='visible'&&Date.now()-last>1000){last=Date.now();chrome.runtime.sendMessage({type:'dirty'}).catch(()=>{});}},300);};
   new MutationObserver(hint).observe(document.documentElement,{childList:true,subtree:true,characterData:true});
   document.addEventListener('visibilitychange',hint);
+  hint();
 }

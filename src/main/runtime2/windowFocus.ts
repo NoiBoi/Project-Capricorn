@@ -15,7 +15,7 @@ export class WindowFocusSource {
     if (identity === this.last) return;
     this.last = identity;
     const observation: Observation = {
-      id: randomUUID(), at, source: 'desktop:foreground', modality: 'window-metadata', content: { ...content },
+      id: randomUUID(), at, sourceIdentity: `window:${content.handle}:${content.pid ?? ''}`, source: 'desktop:foreground', modality: 'window-metadata', content: { ...content },
       provenance: { authority: 'host', collector: 'win32.foreground', metadata: { evidence: 'metadata-only', processRepresentation: 'basename', titleBufferUtf16Units: '1024' } },
       loss: {
         // Win32's existing collector has a 1,024-unit title buffer. Saturation

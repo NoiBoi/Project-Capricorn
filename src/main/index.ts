@@ -1,5 +1,11 @@
+import { chromeSiteAllowed } from '../shared/lifeContext';
+import type { DesktopHost, DisclosureMode } from './runtime2/perception';
+import type { Observation as RuntimeObservation } from './runtime2/contracts';
+import { createDesktopChatGPT, SiwcProvider, siwcConnection } from './runtime2/siwcProvider';
+import type { ChatGPTClient } from '../vendor/siwc-local';
 import { selectRuntime, assertSyntheticProfile } from './runtime2/selection';
 import { Runtime2 } from './runtime2/runtime';
+import { DailySession, DailyConfig } from './runtime2/dailySession';
 import { WindowFocusSource } from './runtime2/windowFocus';
 import { CognitiveRuntime, type CognitiveEffect } from '../core/cognitiveRuntime';
 import { PerformanceDirector, type SpeechOrigin, type Reaction } from '../core/performance';
@@ -20,7 +26,7 @@ import { AgencyRuntime, type SkillInput, type Receipt, type Target } from '../co
 import { createAgency, agencyControl, type AgencyHost } from './cognitive/agencyHost';
 import { RequestEvidence } from '../core/provenance';
 import fs from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { ExplorationDirector } from '../shared/explorationDirector';
 import { companionPersonalContext, preferredUserName } from '../shared/userIdentity';
 import { DeveloperController, previewWait } from './developer';
@@ -72,7 +78,7 @@ import { windowInfo } from './desktop/win32';
 import { nextExploreDelay } from './desktop/exploration';
 import { bodyFootprint as bodyFootprintFor, helperWindow, exposedRegions, exposedBody, lowerWindowRest, intersects } from './desktop/exposure';
 import { surfaceTour, cursorResponse } from './desktop/spatial';
-import { mayInterrupt } from '../shared/behaviorRules';
+import { inQuietHours, mayInterrupt } from '../shared/behaviorRules';
 import { speechAllowed, type SpeechReason } from '../shared/speechPolicy';
 import { Logger } from './log';
 import { SettingsStore } from './store/settingsStore';
@@ -161,6 +167,11 @@ let cognitive: CognitiveFoundation;
 let agency: AgencyRuntime;
 let cognitiveRuntime: CognitiveRuntime;
 let runtime2: Runtime2 | undefined;
+let runtime2Daily: DailySession | undefined;
+let runtime2DailyStarting = false;
+let runtime2DailyControlEpoch = 0;
+let runtime2DailyTrayState = '';
+let runtime2ChatGPT: ChatGPTClient | undefined;
 const windowFocusSource = new WindowFocusSource();
 let agencyHost: AgencyHost;
 let suspended = false;
@@ -600,9 +611,9 @@ async function init() {
   log.info('saved profile loaded', { userData: dir, approvedMemories: memory.approved().length, knownName: !!preferredUserName(memory.approved()), settingsRepairs: settings.repairedOnLoad });
   honcho = new HonchoMemory({ dir, settings: () => settings.get(), history: () => history.recallHistory(), memories: () => memory.approved(), excluded: () => scenes.excludedSources(), canWork: () => !convo?.busy && !behavior?.busy && settings.get().behavior.mode !== 'sleep' && !developer.active, changed: () => toPanel('memory:changed', null) });
   cognitiveStore.transaction(() => {
-    life = new LifeService(dir, secrets, source => cognitive.revoke(source,
+    life = new LifeService(dir, secrets, source => { if (experimental && runtime2 && (!source || source === 'chrome')) void runtime2.revoke('chrome').catch(() => log.warn('Runtime 2 source revocation failed')); return cognitive.revoke(source,
       () => { diagnosticTraces?.clear(); history.invalidateContext(source); modelSessions?.invalidate(source); dialogueCognition?.clear(); cancelBehavior(); convo?.stop(); memoryLearner?.pause(); },
-      () => { cognitiveRuntime?.clear(); behavior?.clear(); }, [chatEvidence, ambientEvidence]),
+      () => { cognitiveRuntime?.clear(); behavior?.clear(); }, [chatEvidence, ambientEvidence]); },
       () => !experimental && settings.get().memory.enabled && settings.get().dialogue.localContext,
       () => settings.get().privacy.saveHistory && settings.get().memory.enabled, cognitiveStore);
   });
@@ -677,8 +688,41 @@ async function init() {
     useComputer: (task,signal) => useComputer(task,{signal}),
   };
   if (experimental) {
-    runtime2 = new Runtime2(actionCtx, `capricorn2:${createHash('sha256').update(dir.toLowerCase()).digest('hex').slice(0, 24)}`, dir);
+    const host: DesktopHost = {
+      windows: () => agencyWindows().map(w => ({ handle: String(w.handle), title: w.title, process: w.process, ...(w.pid !== undefined ? { pid: w.pid } : {}), ...(runtime2?.perception?.browserForWindow(w.title)?.content.url ? { url: runtime2.perception.browserForWindow(w.title)!.content.url } : {}) })),
+      active: () => { const handle = TEST && (globalThis as any).__capriForegroundHandle !== undefined ? (globalThis as any).__capriForegroundHandle as bigint : foregroundHandle(); return handle && !ownHandles().includes(handle) ? String(handle) : null; },
+      allowed: (operation, observation, mode) => runtime2Allowed(operation, observation, mode),
+      browserStatus: () => life.chrome.preflight(),
+      capture: async (handle, signal) => { signal.throwIfAborted(); return captureWindowObservation(BigInt(handle)); },
+      move: async (target, handle, signal) => {
+        signal.throwIfAborted(); if (!runtime2Allowed('move')) return { ok: false, detail: 'Native movement is currently unavailable or denied.' };
+        const abort = () => teleporter.cancel(); signal.addEventListener('abort', abort, { once: true });
+        try {
+          if (handle) {
+            const known = agencyWindows().find(w => String(w.handle) === handle); if (!known) return { ok: false, detail: 'Target window is no longer available.' };
+            return await moveToWindow(known.title, 'teleport', signal, known.handle);
+          }
+          const result = await teleporter.go(target === 'idle' ? 'corner' : target, 'ai');
+          const bounds = charWin && !charWin.isDestroyed() ? herBounds() : null;
+          return { ...result, ok: result.ok && !!bounds && !!result.to && Math.abs(bounds.x - result.to.x) < 4 && Math.abs(bounds.y - result.to.y) < 4, actualBounds: bounds };
+        } finally { signal.removeEventListener('abort', abort); }
+      },
+      retentionDeadline: observation => observation.at + (observation.disclosure?.source === 'chrome' ? life.ledger.source('chrome')?.retentionDays ?? 1 : 7) * 86400000,
+      body: () => ({ bounds: charWin && !charWin.isDestroyed() ? herBounds() : null, perchedWindow: perchHandle ? String(perchHandle) : null, moving: !!teleporter?.active, carried: !!drag?.active }),
+    };
+    runtime2ChatGPT = createDesktopChatGPT(dir);
+    if (process.env.CAPRI_V2_DAILY === '1') runtime2Daily = new DailySession(dir);
+    runtime2ChatGPT.subscribe(session => toPanel('connection:status', siwcConnection(session, runtime2Daily?.config.model || process.env.CAPRI_V2_MODEL)));
+    runtime2 = new Runtime2(actionCtx, `capricorn2:${createHash('sha256').update(dir.toLowerCase()).digest('hex').slice(0, 24)}`, dir, {}, {
+      provider: new SiwcProvider(runtime2ChatGPT, runtime2Daily), options: { model: process.env.CAPRI_V2_MODEL, daily: runtime2Daily,
+        contextBudget: Number(process.env.CAPRI_V2_CONTEXT_TOKENS ?? 100_000), ambientMs: Math.max(10000, Number(process.env.CAPRI_V2_AMBIENT_MS ?? (runtime2Daily ? 180_000 : 30_000))), host, emit: toPanel },
+    });
     await runtime2.initialize(listener => windowFocusSource.subscribe(listener));
+    await life.enableRawChrome(async (page, intake) => {
+      if (!runtime2!.attention?.sample('chrome')) return false;
+      if (!runtime2Allowed('collect', { disclosure: { source: 'chrome', url: page.url } } as RuntimeObservation)) return false;
+      try { await runtime2!.acceptPage(page, intake); return true; } catch { log.warn('Runtime 2 page archive unavailable'); return false; }
+    });
   }
   const learner = memoryLearner = new MemoryLearning({ enabled: () => !experimental, cognition:dialogueCognition, settings: () => settings.get(), provider: makeProvider, memory, log, dir, relationship, personalContext, scene: conversationScene, episodes: scenes,
     deliveredAsides: () => scenes.recent(12).filter(x => x.kind === 'said').slice(-3).map(x => ({ text: x.text, messageId: `aside:${x.at}`, at: x.at })),
@@ -746,7 +790,7 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
     void life.start();
   }
   monitor = new ConnectionMonitor(makeProvider, geminiKeySource, log);
-  monitor.on('changed', (st) => { toPanel('connection:status', st); cue({ type: 'connection', state: st.state }); updateTrayMenu(); });
+  monitor.on('changed', (st) => { if (experimental) return; toPanel('connection:status', st); cue({ type: 'connection', state: st.state }); updateTrayMenu(); });
   teleporter = new TeleportController({
     settings: () => settings.get(),
     bounds: () => (charWin && !charWin.isDestroyed() ? herBounds() : null),
@@ -904,12 +948,13 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
   screen.on('display-removed', reclampCharacter);
   screen.on('display-added', reclampCharacter);
   screen.on('display-metrics-changed', reclampCharacter);
-  powerMonitor.on('lock-screen',()=>{activityLocked=true;interactionProfile.pauseActivity('locked');});
-  powerMonitor.on('unlock-screen',()=>{activityLocked=false;});
-  powerMonitor.on('suspend', () => { suspended=true; interactionProfile.pauseActivity('suspend'); stopAgencyMovement(); for(const i of agency.active('stay_at_window'))agency.recover(i.id); observeAgency(); });
-  powerMonitor.on('resume', () => { suspended=false; reminders.tick(); reclampCharacter(); observeAgency();agency.tick(); void monitor.check('resume'); });
+  powerMonitor.on('lock-screen',()=>{activityLocked=true;runtime2?.environment(true);teleporter.cancel();interactionProfile.pauseActivity('locked');});
+  powerMonitor.on('unlock-screen',()=>{activityLocked=false;runtime2?.environment(suspended);});
+  powerMonitor.on('suspend', () => { suspended=true;runtime2?.environment(true); interactionProfile.pauseActivity('suspend'); stopAgencyMovement(); for(const i of agency.active('stay_at_window'))agency.recover(i.id); observeAgency(); });
+  powerMonitor.on('resume', () => { suspended=false; runtime2?.environment(activityLocked); reminders.tick(); reclampCharacter(); observeAgency();agency.tick(); void monitor.check('resume'); });
 
-  if (!s0.firstRunComplete) setTimeout(() => openPanel('welcome'), 800);
+  if (runtime2Daily) setTimeout(() => openPanel('chat'), 800);
+  else if (!s0.firstRunComplete) setTimeout(() => openPanel('welcome'), 800);
   else if (!TEST && process.argv.includes('--developer')) setTimeout(() => openPanel('developer'), 800);
   else if (!TEST && process.argv.includes('--memory')) setTimeout(() => openPanel('memory'), 800);
   else if (!TEST && process.argv.includes('--panel')) setTimeout(() => openCompanion(), 800);
@@ -1179,6 +1224,16 @@ function openPanel(tab: string = 'chat',desiredNear?:DRect) {
 
 let turnSuccesses = 0, lastVictoryAt = 0;
 function toPanel(channel: string, payload: unknown) {
+  if (channel === 'runtime2:stopSpeech') { cue({ type: 'stopSpeech' }); return; }
+  if (channel === 'runtime2:speak') {
+    const p = payload as { id: string; text: string; ambient: boolean };
+    const utteranceId = 'runtime2:' + p.id;
+    const reason = p.ambient ? 'proactive' : 'reply';
+    let suppressedBy: string | null = null;
+    const accepted = speak(reason, utteranceId, p.text, undefined, block => { suppressedBy = block; });
+    runtime2Daily?.recorder.event('speech.dispatch', { utteranceId, ambient: p.ambient, accepted, suppressedBy, outcome: accepted ? 'queued-not-yet-audible' : 'suppressed-by-speech-policy' });
+    return;
+  }
   if(channel==='chat:message'&&(payload as {message:ChatMessage}).message.role==='user')turnSuccesses=0;
   if(channel==='action:result'&&(payload as {ok:boolean}).ok)turnSuccesses++;
   if(channel==='chat:done') {
@@ -1322,10 +1377,10 @@ function stayRestTick() {
   const lines = [`${time}. I've kept my end of the bargain. Your move soon, choom.`, `${time}. Don't get too comfortable with me behaving this well.`, `${time}. There, I even woke up to tell you. You're welcome.`];
   if (presentRemark(lines[Math.floor(Math.random()*lines.length)], true)) company.markReminded();
 }
-async function moveToWindow(query: string, _motion: 'teleport' | 'glide' = 'teleport') {
+async function moveToWindow(query: string, _motion: 'teleport' | 'glide' = 'teleport', signal?: AbortSignal, knownHandle?: bigint) {
   const all = desktopWindows().filter(w => w.eligible !== false).map(w => ({...w, ...observedWindow(w.handle), handle:w.handle}));
   const fg=TEST?(globalThis as any).__capriForegroundHandle:foregroundHandle();
-  const w = resolveWindow(query, all, fg && !ownHandles().includes(fg) ? fg : lastDesktopHandle || attentionHandle);
+  const w = knownHandle ? all.find(w => w.handle === knownHandle) : resolveWindow(query, all, fg && !ownHandles().includes(fg) ? fg : lastDesktopHandle || attentionHandle);
   if (!w) return {ok:false, detail:'Bring the window into view and use its title or app name. More than one match needs a more specific title.'};
   if (company.avoiding(String(w.handle))) return {ok:false, detail:"I'm keeping clear of that window. Tell me I can visit it first."};
   const plan = targetTour(herBounds(), w);
@@ -1336,7 +1391,7 @@ async function moveToWindow(query: string, _motion: 'teleport' | 'glide' = 'tele
   if (teleporter.active || revision !== placementRevision) return {ok:false,detail:'Movement interrupted. Call me over again.'};
   const landing = () => { const rect=trackedWindowFor(w.handle); return rect ? targetTour(herBounds(), {...w,rect})?.perch : null; };
   const cognitiveRevision = cognitiveRuntime.executionRevision();
-  const valid = () => cognitiveRuntime.executionRevision() === cognitiveRevision && revision === placementRevision && !!landing();
+  const valid = () => !signal?.aborted && cognitiveRuntime.executionRevision() === cognitiveRevision && revision === placementRevision && !!landing() && agencyWindows().some(target => target.handle === w.handle && target.pid === w.pid && target.title === w.title && target.process === w.process);
   try {
     pendingPerch=w; pendingPerchFraction=plan.perch.fraction; pendingPerchMode=plan.perch.mode;
     if(valid()) await teleporter.jumpTo(()=>{const p=landing()!;pendingPerch={...w,rect:trackedWindowFor(w.handle)!};pendingPerchFraction=p.fraction;pendingPerchMode=p.mode;return {...p.bounds,kind:'perch' as const};},undefined,()=>!valid());
@@ -1444,7 +1499,16 @@ let placementRevision = 0;
 let placementTimer: NodeJS.Timeout | null = null;
 const songBanter = new SongBanterGate();
 let musicChanges: MusicChanges;
-const musicWatcher=new MusicWatcher(track=>musicChanges.observe(track,Date.now()));
+const musicWatcher=new MusicWatcher(track=>{
+  if (experimental) {
+    if (!runtime2?.collecting || !runtime2Allowed('collect') || !settings.get().dialogue.spotifyBanter) return;
+    const observation: RuntimeObservation = { id: randomUUID(), at: Date.now(), source: 'windows:spotify-media', sourceIdentity: 'windows:spotify-media', modality: 'application-text',
+      content: { handle: null, process: 'spotify.exe', title: track ? track.title + ' · ' + track.artist : '', text: JSON.stringify({ track, state: track ? 'playing' : 'no-playing-metadata', audioCaptured: false }) },
+      disclosure: { source: 'screen', retain: settings.get().privacy.saveHistory }, provenance: { authority: 'host', collector: 'windows.published-spotify-media', metadata: { evidence: 'metadata-only' } }, loss: { truncated: false, missing: ['audio', 'non-spotify-media', 'call-presence'] } };
+    void runtime2.perception?.observe(observation).catch(() => {}); return;
+  }
+  musicChanges.observe(track,Date.now());
+});
 const youtubeCache=new Map<string,{at:number;video:BrowserVideo|null}>();
 const youtubeComments=new Map<string,number>();
 async function youtubeMetadata(info:{title:string;process:string}){
@@ -1947,10 +2011,25 @@ function openCompanion() {
 /** The single gate for speaking out loud: every utterance names its reason and is logged. */
 let speakCount = 0;
 const pendingSpokenRemarks = new Map<string, { complete: () => void; started: boolean }>();
-function speak(reason: SpeechReason, utteranceId: string, text: string, onDelivered?: () => void): boolean {
-  text = retiredLines.filterGenerated(text); if (!text.trim()) return false;
-  if (developer.active) return false;
-  if (gameActive() || !speechAllowed(reason, settings.get(), { fullscreen: fullscreenHidden, hidden: userHidden })) return false;
+function speechBlock(reason: SpeechReason, text: string) {
+  if (!text.trim()) return 'empty-after-line-filter';
+  if (developer.active) return 'developer-mode';
+  if (gameActive()) return 'game-active';
+  const s = settings.get();
+  if (speechAllowed(reason, s, { fullscreen: fullscreenHidden, hidden: userHidden })) return null;
+  if (!s.voice.ttsEnabled) return 'tts-disabled';
+  if (s.behavior.doNotDisturb) return 'do-not-disturb';
+  if (fullscreenHidden) return 'fullscreen';
+  if (userHidden) return 'companion-hidden';
+  if (reason === 'proactive' && !s.behavior.idleRemarks) return 'idle-remarks-disabled';
+  if (reason === 'proactive' && !s.behavior.proactiveVoice) return 'proactive-voice-disabled';
+  if (inQuietHours(s.behavior.quietHours)) return 'quiet-hours';
+  return 'speech-policy';
+}
+function speak(reason: SpeechReason, utteranceId: string, text: string, onDelivered?: () => void, onBlocked?: (reason: string) => void): boolean {
+  text = retiredLines.filterGenerated(text);
+  const blocked = speechBlock(reason, text);
+  if (blocked) { onBlocked?.(blocked); return false; }
   speakCount++;
   if (onDelivered) {
     pendingSpokenRemarks.set(utteranceId, { complete: onDelivered, started: false });
@@ -2032,6 +2111,7 @@ function onSettingsChanged(s: Settings) {
   conversationScene?.privacyChanged();
   const privacySignature = JSON.stringify([s.memory.enabled, s.privacy.saveHistory, s.dialogue.localContext, s.actions.policies.read_screen,s.privacy.activityAwareness.enabled,s.privacy.activityAwareness.retentionDays,s.memory.historyRetentionDays]);
   if (privacySignature !== behaviorPrivacySignature) {
+    if (experimental && runtime2) void runtime2.revoke('screen').catch(() => log.warn('Runtime 2 privacy revocation failed'));
     diagnosticTraces?.clear(); modelSessions?.clear(); cognitiveRuntime?.clear();
     if (life) { cancelBehavior(); convo?.stop(); conversationScene?.invalidateContext(); chatEvidence.reset(); ambientEvidence.reset(); if (!s.memory.enabled || !s.privacy.saveHistory) memoryLearner?.discard(); else memoryLearner?.pause(); if (!experimental) void life.start(); life.ledger.flush(); }
     personalContext?.privacyChanged();
@@ -2388,7 +2468,7 @@ async function readRequestedWindow(query: string | undefined, options: { userApp
     if(!page||!source?.permissions.content||!page.permissions.content) return failure('Chrome content is unavailable or excluded. Enable the approved site and content in Connections, then refresh its visible tab with the paired extension.');
     let detail;try{detail=JSON.parse(page.detail);}catch{return failure('The approved Chrome observation is invalid. Refresh the tab.');}
     const snapshot=life.ledger.pageSnapshot(detail.url);
-    if(!snapshot||snapshot.hash!==detail.contentHash||!source.sites.includes(new URL(detail.url).origin))return failure('No current authorized Chrome text is available. Refresh the approved tab.');
+    if(!snapshot||snapshot.hash!==detail.contentHash||!chromeSiteAllowed(source.sites,detail.url))return failure('No current authorized Chrome text is available. Refresh the approved tab.');
     const text=snapshot.sections.map(section=>section.text).join('\n').slice(0,6000);
     return text&&valid()?{ok:true,text,window:label,detail:'Authorized Chrome semantic text'}:failure('The Chrome observation was empty, closed, excluded or revoked.');
   }
@@ -2412,24 +2492,25 @@ async function readRequestedWindow(query: string | undefined, options: { userApp
   return {ok:true,text:text.slice(0,6000),window:label,detail:'Visible crop interpreted by '+provider.name};
 }
 async function captureWindowObservation(handle: bigint, directApproved = false): Promise<WindowObservation | undefined> {
-  if (!settings.get().dialogue.localContext || settings.get().actions.policies.read_screen === 'deny' || (!directApproved && (settings.get().actions.policies.read_screen !== 'allow' || behavior.diagnostics().privateExchange))) return undefined;
+  const unavailable = (reason: string): undefined => { if (experimental) throw Error(reason); return undefined; };
+  if (!settings.get().dialogue.localContext || settings.get().actions.policies.read_screen === 'deny' || (!directApproved && (settings.get().actions.policies.read_screen !== 'allow' || behavior.diagnostics().privateExchange))) return unavailable('Window capture denied by local-context, screen permission or private-exchange controls.');
   if (TEST&&process.env.CAPRI_NATIVE_OBSERVATION!=='1') return (globalThis as any).__capriObservationOverride;
-  if (gameActive()) return undefined;
+  if (gameActive()) return unavailable('Window capture unavailable while a game or fullscreen application is active.');
   try {
     const sources = await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 960, height: 640 } });
     const source = sources.find(x => x.id.split(':')[1] === String(handle));
       if (source && !source.thumbnail.isEmpty()) {
-        const rect = trackedWindowFor(handle); if (!rect) return undefined;
-        const region = exposedRegions(rect, blockersFor(handle)).filter(r=>r.width>=160&&r.height>=100).sort((a, b) => b.width * b.height - a.width * a.height)[0]; if (!region) return undefined;
+        const rect = trackedWindowFor(handle); if (!rect) return unavailable('Target window is unavailable, covered or restricted.');
+        const region = exposedRegions(rect, blockersFor(handle)).filter(r=>r.width>=160&&r.height>=100).sort((a, b) => b.width * b.height - a.width * a.height)[0]; if (!region) return unavailable('Target window has no permitted exposed capture region.');
         const size = source.thumbnail.getSize(), sx = size.width / rect.width, sy = size.height / rect.height;
         const x = Math.max(0, Math.floor((region.x - rect.x) * sx)), y = Math.max(0, Math.floor((region.y - rect.y) * sy));
         const crop = { x, y, width: Math.min(size.width - x, Math.max(1, Math.floor(region.width * sx))), height: Math.min(size.height - y, Math.max(1, Math.floor(region.height * sy))) };
         const image=source.thumbnail.crop(crop), pixels=image.resize({width:64,height:48,quality:'good'}).toBitmap();
         const signature=Array.from({length:pixels.length/4},(_,i)=>Math.min(15,Math.floor((pixels[i*4]+pixels[i*4+1]+pixels[i*4+2])/48)).toString(16)).join('');
-        return { jpegBase64: image.toJPEG(65).toString('base64'),signature, region, window: rect };
+        return { jpegBase64: image.toJPEG(65).toString('base64'),signature, region, window: rect, imageSize: image.getSize() };
       }
-  } catch { log.debug('window preview unavailable; using metadata'); }
-  return undefined;
+  } catch (error) { if (experimental) throw error; log.debug('window preview unavailable; using metadata'); }
+  return unavailable('Native window source or thumbnail is unavailable.');
 }
 async function captureScreen(): Promise<Screen> {
   const d = screen.getPrimaryDisplay();
@@ -2751,15 +2832,38 @@ function visibleObservationWindows(now=Date.now()) {
   observationWindowsCache=windowsForPlacement().filter(w=>exposedRegions(w.rect,blockersFor(w.handle)).some(r=>r.width>=160&&r.height>=100)).slice(0,24).map(w=>{const info=observedWindow(w.handle);return {id:String(w.handle),key:explorationKey(info),label:info.process+': '+info.title,semantic:/chrome/i.test(info.process)&&life.ledger.displayedPage(info.title)&&life.ledger.developmentSections(life.ledger.displayedPage(info.title)!).length?life.ledger.semanticFingerprint(info.title):'',video:videoWindow(info)};});
   return observationWindowsCache;
 }
+function runtime2Allowed(operation: Parameters<DesktopHost['allowed']>[0], observation?: RuntimeObservation, mode: DisclosureMode = 'direct') {
+  const s = settings.get();
+  if (quitting || suspended || activityLocked) return false;
+  if (operation === 'move') return s.actions.policies.teleport === 'allow' && !drag?.active && !teleporter?.active && !throwTimer && !fallTimer && !perchMoving && !userHidden && !fullscreenHidden && !gameActive() && !company.blocked() && !agency?.movementHeld() && s.behavior.mode !== 'sleep';
+  if (operation === 'conversation') return s.privacy.saveHistory;
+  if (operation === 'state') return s.memory.enabled && s.privacy.saveHistory;
+  if (!observation && operation === 'disclose') return s.privacy.saveHistory && (mode === 'direct' || s.behavior.mode !== 'sleep' && !s.behavior.doNotDisturb);
+  if (!s.dialogue.localContext || s.actions.policies.read_screen !== 'allow') return false;
+  if (observation?.content?.handle && company.avoiding(observation.content.handle)) return false;
+  if (observation?.disclosure?.source === 'chrome' || /chrome/i.test(observation?.content?.process ?? '')) {
+    const source = life.ledger.source('chrome'), url = observation?.disclosure?.url ?? observation?.content?.url ?? runtime2?.perception?.browserForWindow(observation?.content?.title ?? '')?.content.url;
+    if (!source?.permissions.collect || !source.permissions.content || source.paused || !url) return false;
+    if (!chromeSiteAllowed(source.sites, url)) return false;
+    if (operation === 'retain') return source.permissions.retain && s.privacy.saveHistory;
+    if (observation?.at && Date.now() - observation.at > source.retentionDays * 86400000) return false;
+    if (operation === 'disclose') return source.permissions.retain && s.privacy.saveHistory && (mode === 'direct' ? source.permissions.live : source.permissions.proactive ?? source.permissions.live);
+  }
+  if (operation === 'retain') return s.privacy.saveHistory;
+  return true;
+}
 let previousUserIdle = 0;
 let activities: ActivityDirector;
 function presenceTick() {
   if (experimental) {
+    if (!TEST && runtime2?.collecting && runtime2Allowed('collect') && settings.get().dialogue.spotifyBanter) musicWatcher.start(); else musicWatcher.stop();
+    if (runtime2Daily) { const state = `${runtime2Daily.paused}:${runtime2Daily.recorder.status.active}`; if (state !== runtime2DailyTrayState) { runtime2DailyTrayState = state; updateTrayMenu(); } }
     // Same Win32 collector, before legacy semantic admission or interpretation.
-    if (runtime2?.status !== 'active' || suspended || activityLocked || process.env.CAPRI_V2_WINDOW_FOCUS === '0' || settings.get().actions.policies.read_screen === 'deny') return;
+    if (!runtime2?.collecting || !runtime2Allowed('collect') || process.env.CAPRI_V2_WINDOW_FOCUS === '0' || !runtime2.attention?.sample('screen')) return;
+    if (TEST && (globalThis as any).__capriForegroundHandle === undefined) return;
     const handle = TEST && (globalThis as any).__capriForegroundHandle !== undefined ? (globalThis as any).__capriForegroundHandle as bigint : foregroundHandle();
     const external = handle && !ownHandles().includes(handle) ? handle : null;
-    const info = external ? windowInfo(external) : { title: '', process: '' };
+    const info = external ? observedWindow(external) : { title: '', process: '' };
     windowFocusSource.sample({ handle: external ? String(external) : null, ...info });
     return;
   }
@@ -2919,6 +3023,11 @@ function updateTrayMenu() {
   const s = settings.get();
   const visible = shown(charWin);
   const items: MenuItemConstructorOptions[] = [
+    ...(runtime2Daily ? [
+      { label: runtime2Daily.recorder.status.active ? 'Daily test: RECORDING' : 'Daily test: recording off', click: () => openPanel('chat') },
+      { label: 'Pause daily test now', click: () => { runtime2DailyControlEpoch++; void runtime2?.pauseDaily(); } },
+      { label: 'Stop diagnostic session', click: () => { runtime2DailyControlEpoch++; void runtime2?.stopDaily().catch(() => {}); } },
+    ] : []),
     { label: 'Behavior mode', submenu: (['normal', 'explore', 'sleep'] as const).map(mode => ({ label: mode === 'normal' ? 'Company' : mode === 'explore' ? 'Explore' : 'Sleep', type: 'radio', checked: s.behavior.mode === mode, click: () => setBehaviorMode(mode) })) },
     { label: 'Chat…  (Ctrl+Space+C)', click: () => openCompanion() },
     { label: recording ? 'Stop listening' : 'Push to talk  (Ctrl+Alt+T)', enabled: s.voice.micPermission, click: () => (recording ? stopRecording() : startRecording()) },
@@ -2947,7 +3056,7 @@ function updateTrayMenu() {
     { label: 'Quit Capri', click: () => app.quit() },
   ];
   tray.setContextMenu(Menu.buildFromTemplate(items));
-  tray.setToolTip(`Capri${recording ? ' — 🎙 listening' : wake.running ? ' — wake word on' : ''}${s.behavior.doNotDisturb ? ' — DND' : ''}`);
+  tray.setToolTip(`Capri${runtime2Daily?.recorder.status.active ? ' — diagnostic recording' : ''}${recording ? ' — 🎙 listening' : wake.running ? ' — wake word on' : ''}${s.behavior.doNotDisturb ? ' — DND' : ''}`);
 }
 function toggleHidden() {
   userHidden = shown(charWin);
@@ -3284,16 +3393,103 @@ function registerIpc() {
   });
   handle('secrets:delete', 'panel', str(40), (key) => { if(key.startsWith('lifeOAuth')){const id=accountIds[Number(key.slice(9))];if(id)life.forget(id);}if(key==='discordBot')life.forget('discord-bot');if(['googleClient','googleClientSecret'].includes(key))life.stage3.googleConfigurationChanged();if(key.startsWith('google'))life.forget('calendar');if(key==='lastfmKey')life.forget('lastfm');if(key==='owntracksBasic')life.forget('owntracks');if (SecretStore.isKey(key)) secrets.delete(key); void monitor.check('key removed'); return true; });
 
+  handle('runtime2:session', 'panel', none, async () => {
+    if (!runtime2ChatGPT) return { enabled: false, status: 'disconnected', sharing: false };
+    const session = await runtime2ChatGPT.getSession();
+    return { enabled: true, status: session.status, sharing: session.sharing, account: session.identity?.email ?? session.profileLabel, model: runtime2Daily?.config.model || process.env.CAPRI_V2_MODEL };
+  });
+  handle('runtime2:auth', 'panel', z.enum(['signin','enable','disconnect','cancel']), async action => {
+    if (!runtime2ChatGPT || !runtime2) throw Error('Runtime 2 is not enabled.');
+    if (runtime2Daily) { runtime2DailyControlEpoch++; await runtime2.pauseDaily(); } else runtime2.stopChat();
+    if (action === 'cancel') { runtime2ChatGPT.cancelSignIn(); return; }
+    if (action === 'disconnect') { await runtime2ChatGPT.disconnect(); return; }
+    await runtime2ChatGPT.signIn({ reconsent: action === 'enable' });
+  });
+  handle('runtime2:models', 'panel', none, async () => {
+    if (!runtime2ChatGPT) throw Error('Runtime 2 is not enabled.');
+    return new SiwcProvider(runtime2ChatGPT).models(AbortSignal.timeout(30_000));
+  });
+  handle('runtime2:daily-status', 'panel', none, () => runtime2Daily ? { ...runtime2Daily.status, readiness: {
+    archive: runtime2?.archiveHealth, chrome: life.chrome.preflight(),
+    observation: !!runtime2?.collecting && runtime2Allowed('collect'),
+    screenshotPermission: runtime2Allowed('collect') && runtime2Allowed('disclose'),
+    screenshotTargets: runtime2?.perception?.host.windows().length ?? 0,
+    movement: runtime2Allowed('move'),
+    screenLocked: activityLocked || suspended,
+    note: 'Permissions and targets are readiness checks. Use Check capture to verify actual pixels. Chrome last accepted delivery is separate from pairing. No microphone or call audio is recorded.',
+  } } : null);
+  handle('runtime2:daily-config', 'panel', DailyConfig, async value => {
+    if (!runtime2Daily || !runtime2ChatGPT) throw Error('Launch the daily-test entrypoint first.');
+    const models = await new SiwcProvider(runtime2ChatGPT).models(AbortSignal.timeout(30000));
+    const selected = models.find(m => m.id === value.model);
+    if (!selected?.contextTokens || /codex|luna/i.test(selected.id + ' ' + selected.label)) throw Error('Choose a general-purpose model with a known context capacity from this account catalog.');
+    await runtime2Daily.configure(value);
+  });
+  handle('runtime2:daily-control', 'panel', z.enum(['start','stop','pause','resume','folder','report','export','capture','permissions','package']), async action => {
+    if (!runtime2Daily || !runtime2 || !runtime2ChatGPT) throw Error('Launch the daily-test entrypoint first.');
+    if (['pause','stop','permissions'].includes(action)) runtime2DailyControlEpoch++;
+    if (['pause','stop','permissions'].includes(action)) cue({ type: 'stopSpeech' });
+    if (action === 'permissions') {
+      await runtime2.pauseDaily();
+      settings.update({ memory: { enabled: true }, privacy: { saveHistory: true }, dialogue: { localContext: true }, actions: { policies: { read_screen: 'allow', teleport: 'allow' } } });
+      await runtime2.whenSettled();
+      return 'Desktop context, local history, memory and movement enabled for this isolated profile. Chrome still needs pairing and site authorization in Connections.';
+    } else if (action === 'package') {
+      if (runtime2Daily.recorder.status.active) throw Error('Stop recording before packaging the private session.');
+      const folder = runtime2Daily.recorder.status.folder; if (!folder) throw Error('Start a diagnostic session first.');
+      const target = path.join(runtime2Daily.recorder.root, path.basename(folder) + '-private');
+      assertSyntheticProfile(target); assertSyntheticProfile(folder);
+      if (fs.existsSync(target)) throw Error('A private package already exists; open the diagnostic folder to review it.');
+      const bytes = (await fs.promises.readdir(folder, { recursive: true, withFileTypes: true })).filter(e => e.isFile());
+      let total = 0; for (const entry of bytes) total += (await fs.promises.stat(path.join(entry.parentPath, entry.name))).size;
+      if (runtime2Daily.recorder.status.bytes + total > runtime2Daily.config.diskBudgetMB * 1024 ** 2) throw Error('Insufficient diagnostic disk budget to create another private copy. Review the original session folder instead.');
+      // A portable directory is inspectable without an archive utility and includes all relative evidence links.
+      await fs.promises.cp(folder, target, { recursive: true, dereference: false, errorOnExist: true, force: false, filter: source => { assertSyntheticProfile(source); return true; } });
+      await shell.openPath(target);
+      return 'Private session package created locally. It contains sensitive content; nothing was uploaded. Use the separate redacted export for sharing.';
+    } else if (action === 'start') {
+      if (runtime2DailyStarting) throw Error('Daily-test startup is already in progress.');
+      runtime2DailyStarting = true;
+      const epoch = ++runtime2DailyControlEpoch;
+      try {
+        const models = await new SiwcProvider(runtime2ChatGPT).models(AbortSignal.timeout(30000));
+        if (epoch !== runtime2DailyControlEpoch) throw Error('Daily-test startup canceled.');
+        const model = models.find(m => m.id === runtime2Daily!.config.model);
+        if (!model?.contextTokens || /codex|luna/i.test(model.id + ' ' + model.label)) throw Error('Select an available conversational model first.');
+        if (runtime2.archiveHealth.state !== 'ready') throw Error('Experience archive is not ready.');
+        await runtime2.startDaily({ model, chrome: life.chrome.preflight(), controlledFixture: TEST });
+        if (epoch !== runtime2DailyControlEpoch) { await runtime2.stopDaily(); throw Error('Daily-test startup canceled.'); }
+      } finally { runtime2DailyStarting = false; }
+    } else if (action === 'pause') await runtime2.pauseDaily();
+    else if (action === 'resume') runtime2.resumeDaily();
+    else if (action === 'stop') await runtime2.stopDaily();
+    else if (action === 'folder') { await fs.promises.mkdir(runtime2Daily.recorder.root, { recursive: true }); await shell.openPath(runtime2Daily.recorder.status.folder ?? runtime2Daily.recorder.root); }
+    else if (action === 'report') { const file = await runtime2Daily.recorder.report(); if (!file) throw Error('Start a diagnostic session first.'); await shell.openPath(file); }
+    else if (action === 'export') { const file = await runtime2Daily.recorder.exportRedacted(); await shell.openPath(file); }
+    else if (action === 'capture') {
+      if (runtime2Daily.paused) throw Error('Start the diagnostic session, focus the target window, then check capture.');
+      const host = runtime2.perception!.host;
+      // Choose the last external window, since opening the panel makes it foreground.
+      const observations = await runtime2.recentObservations({ limit: 20 });
+      const handle = observations.find(o => o.content.handle && host.windows().some(w => w.handle === o.content.handle))?.content.handle;
+      if (!handle) throw Error('Focus an authorized external window once before checking capture.');
+      const captured = await runtime2.checkCapture(handle);
+      return 'Captured visible pixels. Evidence ID: ' + captured.id;
+    }
+    return 'Daily-test ' + action + ' complete.';
+  });
   handle('chat:send', 'chat', z.object({ text: str(20_000), viaVoice: z.boolean().optional() }), async ({ text }) => {
+    if (runtime2) return { messageId: await runtime2.send(text) };
     await developer.stop();
     if (settings.get().behavior.mode === 'sleep') setBehaviorMode('normal');
     lastInteraction = Date.now(); cancelBehavior(); cue({ type: 'stopSpeech' });
     return { messageId: await convo.send(text) };
   });
-  handle('chat:state', 'any', none, () => ({ phase: convo.phase, busy: convo.busy }));
-  handle('chat:stop', 'any', none, () => { void developer.stop(); agentCtrl?.abort(); convo.stop(); });
-  handle('chat:history', 'panel', z.object({ limit: z.number().int().min(1).max(2000).optional() }).optional(), (a) => history.recent(a?.limit ?? 200));
+  handle('chat:state', 'any', none, () => runtime2?.chatState ?? ({ phase: convo.phase, busy: convo.busy }));
+  handle('chat:stop', 'any', none, () => { if (runtime2) { runtime2.stopChat(); cue({ type: 'stopSpeech' }); return; } void developer.stop(); agentCtrl?.abort(); convo.stop(); });
+  handle('chat:history', 'panel', z.object({ limit: z.number().int().min(1).max(2000).optional() }).optional(), (a) => runtime2 ? runtime2.chatHistory(a?.limit ?? 200) : history.recent(a?.limit ?? 200));
   handle('chat:clear', 'panel', none, async () => {
+    if (runtime2) { await runtime2.clearChat(); return; }
     cancelBehavior(); placementRevision++;
     if (placementTimer) clearTimeout(placementTimer); placementTimer = null;
     convo.stop(); await convo.settle();
@@ -3412,14 +3608,14 @@ function registerIpc() {
   });
   handle('claude:code', 'panel', str(500), async (code) => { const s = await claudeSubmitCode(code); if (s.loggedIn) void monitor.check('claude sign-in'); return s; });
   handle('claude:signout', 'panel', none, async () => { await claudeSignOut(); void monitor.check('claude sign-out'); });
-  handle('connection:get', 'any', none, () => monitor.status);
+  handle('connection:get', 'any', none, async () => runtime2ChatGPT ? siwcConnection(await runtime2ChatGPT.getSession(), runtime2Daily?.config.model || process.env.CAPRI_V2_MODEL) : monitor.status);
   handle('teleport:now', 'any', z.enum(TELEPORT_TARGETS as [TeleportTarget, ...TeleportTarget[]]).optional(), (t) => t === 'perch' ? userSitOnWindow() : userTeleport(t ?? 'auto'));
   handle('char:teleport', 'char', z.object({ id: z.number().int(), phase: z.enum(['out', 'in']) }), ({ id, phase }) => {
     if (id === FAREWELL_ID && phase === 'out') { farewellAck?.(); return; }
     teleporter.ack(id, phase);
     if (phase === 'in') { raiseCharacter(); raiseSoon(); }
   });
-  handle('connection:check', 'panel', none, async () => { await monitor.check('manual'); return monitor.status; });
+  handle('connection:check', 'panel', none, async () => { if (runtime2ChatGPT) return siwcConnection(await runtime2ChatGPT.getSession(), runtime2Daily?.config.model || process.env.CAPRI_V2_MODEL); await monitor.check('manual'); return monitor.status; });
   handle('app:version','panel',none,()=>({version:app.getVersion(),packaged:app.isPackaged}));
   handle('diagnostics:export','panel',none,async()=>{
     const result=await dialog.showSaveDialog({title:'Export Capri diagnostic snapshot',defaultPath:path.join(app.getPath('documents'),'Capri-diagnostics-'+app.getVersion()+'-'+new Date().toISOString().replace(/[:.]/g,'-')+'.json'),filters:[{name:'Diagnostic JSON',extensions:['json']}]});
@@ -3472,6 +3668,7 @@ function registerIpc() {
   handle('bubble:resize', 'bubble', z.number().finite().min(40).max(1200), (height) => bubble.resize(height));
   handle('char:menu', 'char', none, charMenu);
   handle('char:speechState', 'char', z.object({ utteranceId: str(100), state: z.enum(['start', 'end', 'error', 'cancel']) }), ({ utteranceId, state }) => {
+    if (utteranceId.startsWith('runtime2:')) { runtime2Daily?.recorder.event('speech.' + state, { utteranceId }); return; }
     const pending = pendingSpokenRemarks.get(utteranceId);
     if (pending) {
       if (state === 'start') pending.started = true;

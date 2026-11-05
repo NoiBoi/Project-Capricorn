@@ -1,3 +1,5 @@
+import type { StateWrite, StateSearch, EvidenceBlob, EvidenceRetention } from './canonicalState';
+import type { RecordInput } from './cognitiveContracts';
 import path from 'node:path';
 import { Worker } from 'node:worker_threads';
 import type { Observation } from './contracts';
@@ -5,6 +7,7 @@ import { DEFAULT_RETENTION, validateId, validateObservation, validateQuery, type
 
 export interface ArchiveOptions {
   retention?: RetentionPolicy;
+  evidenceRetention?: EvidenceRetention;
   /** Injectable ingestion clock and worker path for deterministic integration tests. */
   now?: () => number;
   workerPath?: string;
@@ -48,7 +51,7 @@ export class WindowFocusArchive {
         clearTimeout(entry.timer); this.pending.delete(message.id);
         if (message.ok) entry.resolve(message.value); else entry.reject(Error(message.error));
       });
-      const ready = await this.request('initialize', { profile: this.profile, retention: this.options.retention ?? DEFAULT_RETENTION, now: this.options.now?.() });
+      const ready = await this.request('initialize', { profile: this.profile, retention: this.options.retention ?? DEFAULT_RETENTION, evidenceRetention: this.options.evidenceRetention, now: this.options.now?.() });
       this.workerThreadId = ready.threadId;
       if (this.state === 'starting') this.state = 'ready';
     } catch (error) { this.fail(error instanceof Error ? error : Error(String(error))); await this.exited; throw error; }
@@ -80,6 +83,19 @@ export class WindowFocusArchive {
   async stats() { this.ready(); return this.request('stats', {}); }
   /** Internal bootstrap path; public retrieval remains limited to 100 records. */
   async restore() { this.ready(); return this.request('restore', {}); }
+  async conversation(limit = 2000, dialogueOnly = false, observations?: "only" | "exclude") { this.ready(); return this.request('conversation', { limit, dialogueOnly, observations }); }
+  async appendConversation(record: RecordInput) { this.ready(); return this.request('appendConversation', record); }
+  async maintain() { this.ready(); try { return await this.request('maintain', {}); } catch (error) { this.recordFailure(error); throw error; } }
+  async putState(input: StateWrite) { this.ready(); return this.request('putState', input); }
+  async readAttention() { this.ready(); return this.request('readAttention', {}); }
+  async writeAttention(input: Operations['writeAttention']['input']) { this.ready(); return this.request('writeAttention', input); }
+  async scheduledState() { this.ready(); return this.request('scheduledState', {}); }
+  async findState(input: StateSearch = {}) { this.ready(); return this.request('findState', input); }
+  async reviewState(ids: string[], at: number) { this.ready(); return this.request('reviewState', { ids, at }); }
+  async putEvidence(data: Uint8Array, mime: EvidenceBlob['mime'], expiresAt?: number) { this.ready(); return this.request('putEvidence', { data, mime, expiresAt }); }
+  async getEvidence(id: string) { this.ready(); validateId(id); return this.request('getEvidence', { id }); }
+  async forgetSource(source: 'chrome' | 'screen') { this.ready(); return this.request('forgetSource', { source }); }
+  async clearConversation() { this.ready(); return this.request('clearConversation', {}); }
   close(): Promise<void> {
     if (this.closeTask) return this.closeTask;
     const failed = this.state === 'failed';

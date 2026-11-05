@@ -137,6 +137,12 @@ export interface CharacterEvents {
 
 /** invoke() channels from either renderer to main */
 export interface InvokeMap {
+  'runtime2:session': [void, { enabled: boolean; status: string; sharing: boolean; account?: string; model?: string }];
+  'runtime2:auth': ['signin' | 'enable' | 'disconnect' | 'cancel', void];
+  'runtime2:models': [void, { id: string; label: string; contextTokens?: number }[]];
+  'runtime2:daily-status': [void, import('../main/runtime2/dailySession').DailySession['status'] & { readiness: Record<string, unknown> } | null];
+  'runtime2:daily-config': [import('../main/runtime2/dailySession').DailySettings, void];
+  'runtime2:daily-control': ['start' | 'stop' | 'pause' | 'resume' | 'folder' | 'report' | 'export' | 'capture' | 'permissions' | 'package', string];
   'life:draft': [{id:string;draft:import('./lifeContext').LifeDraft},void];
   'life:stage3': [void, import('./communications').Stage3View];
   'life:stage3Setup': [import('./communications').Stage3Settings, import('./communications').Stage3View];
@@ -285,6 +291,7 @@ export const INVOKE_CHANNELS: InvokeChannel[] = [
   'dev:get', 'dev:run', 'dev:stop',
   'theatre:ready', 'theatre:done', 'intro:done', 'taskbar:command', 'taskbar:mode',
   'settings:get', 'settings:set', 'settings:reset', 'settings:capabilities', 'secrets:status', 'secrets:set', 'secrets:delete',
+  'runtime2:session', 'runtime2:auth', 'runtime2:models', 'runtime2:daily-status', 'runtime2:daily-config', 'runtime2:daily-control',
   'chat:send', 'chat:stop', 'chat:state', 'chat:history', 'chat:clear', 'memory:list', 'memory:add', 'memory:approve',
   'memory:undo', 'memory:update', 'memory:delete', 'memory:clear', 'memory:patterns', 'memory:clearPatterns', 'activity:summary', 'activity:clear', 'notes:list', 'notes:delete', 'reminders:list', 'reminders:cancel',
   'relationship:get', 'relationship:taste', 'relationship:thread', 'relationship:status', 'relationship:remove', 'dialogue:retire', 'dialogue:restore', 'dialogue:feedback',

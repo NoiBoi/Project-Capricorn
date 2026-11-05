@@ -30,4 +30,9 @@ export const disconnectedChrome = (): LifeSourceConfig => ({ id: 'chrome', kind:
 export function safePage(raw: string): string | null {
   try { const u = new URL(raw); if (!['http:', 'https:'].includes(u.protocol) || u.username || u.password || /(^|[./_-])(login|signin|sign-in|auth|oauth|password|checkout|payment|billing|bank|account|inbox|mail|messages|medical|health)([./_-]|$)/i.test(u.hostname + u.pathname)) return null; return u.origin + u.pathname; } catch { return null; }
 }
+/** Explicit all-websites opt-in still obeys sensitive-page and protocol exclusions. */
+export function chromeSiteAllowed(sites: readonly string[], raw: string): boolean {
+  const safe = safePage(raw);
+  return !!safe && (sites.includes('*') || sites.includes(new URL(safe).origin));
+}
 export function cleanEvidence(text: string, max = 1200) { return text.replace(/[\u0000-\u001f]/g, ' ').replace(/\b(?:sk-[\w-]+|gh[pousr]_[\w]+|Bearer\s+\S+|(?:password|secret|token|api[_ -]?key)\s*[:=]\s*\S+)\b/gi, '[redacted]').replace(/\b(?:\d[ -]?){13,19}\b/g, '[redacted]').trim().slice(0, max); }

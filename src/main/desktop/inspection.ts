@@ -1,7 +1,7 @@
 import type { Rect } from './displays';
 import type { EnvironmentalReading } from '../../shared/curiosity';
 export interface InterestPoint { x: number; y: number; label: string }
-export interface WindowObservation { jpegBase64: string; signature?:string; region: Rect; window?: Rect }
+export interface WindowObservation { jpegBase64: string; signature?:string; region: Rect; window?: Rect; imageSize?: { width: number; height: number } }
 const shortText = (value: unknown) => typeof value === 'string' ? value.replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 160) : '';
 export function inspectionReading(raw: string): EnvironmentalReading {
   try {

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { LifeContext, ContextAssembler } from '../../src/main/life/context';
 import { ChromeBridge } from '../../src/main/life/chrome';
 import { ProjectAdapter, projectPathAllowed } from '../../src/main/life/projects';
-import { disconnectedChrome, safePage, type LifeObservation } from '../../src/shared/lifeContext';
+import { disconnectedChrome, safePage, chromeSiteAllowed, type LifeObservation } from '../../src/shared/lifeContext';
 import { publicHistory } from '../../src/main/ai/promptContext';
 const dirs:string[]=[]; const cleanup:(()=>void)[]=[];
 afterEach(()=>{for(const f of cleanup.splice(0))f();for(const dir of dirs.splice(0))fs.rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
@@ -22,6 +22,18 @@ describe('Life Context event ordering, privacy and continuity',()=>{
   it('pauses admission and removes old context when permissions change',()=>{const s=setup();s.life.ingest(s.event());s.life.configure({...s.life.source('chrome')!,paused:true});expect(s.life.current()).toEqual([]);expect(s.life.ingest(s.event({revision:2}))).toBe(false);});
 });
 describe('Chrome and local adapter boundaries',()=>{
+  it('allows all normal web origins only with explicit wildcard permission and keeps sensitive/private exclusions',async()=>{
+    const s=setup();s.life.configure({...s.life.source('chrome')!,sites:['*'],permissions:{collect:true,live:true,proactive:true,retain:true,content:true,learn:false}});
+    const bridge=new ChromeBridge(s.life,()=>({token:'a'.repeat(64),extensionId:'a'.repeat(32)}));
+    const accepted:any[]=[];bridge.setRawSink(async p=>{accepted.push(p);return true;});
+    const page={recordId:'tab',revision:Date.now(),occurredAt:Date.now(),url:'https://new-homework.example.org/problem',title:'Problem',headings:[],sections:[{kind:'paragraph' as const,path:'main',text:'Equation evidence'}],mode:'semantic' as const,incognito:false as const,focused:true as const,visible:true as const};
+    expect(await bridge.accept(page)).toBe(true);expect(accepted[0].sections[0].text).toBe('Equation evidence');
+    expect(bridge.preflight(page.url).authorized).toBe(true);
+    expect(await bridge.accept({...page,revision:page.revision+1,url:'https://another.example.org/notes'})).toBe(true);
+    for(const url of ['https://x.test/login','https://x.test/payment','file:///C:/private','https://user:password@x.test/docs']){expect(chromeSiteAllowed(['*'],url)).toBe(false);expect(await bridge.accept({...page,url,revision:page.revision+2})).toBe(false);}
+    expect(()=>bridge.accept({...page,incognito:true} as any)).toThrow();
+    expect(chromeSiteAllowed([],page.url)).toBe(false);expect(chromeSiteAllowed(['https://other.test'],page.url)).toBe(false);
+  });
   it('strips URL secrets and blocks sensitive paths by default',()=>{expect(safePage('https://docs.example.com/api?token=secret#private')).toBe('https://docs.example.com/api');for(const url of ['https://x.com/login','https://bank.example.com/','file:///C:/secret','https://user:pass@x.com/docs','https://x.com/account/settings'])expect(safePage(url)).toBeNull();});
   it('rejects unapproved sites, private tabs, stale pages, and strips unapproved selected content',()=>{const s=setup();const bridge=new ChromeBridge(s.life,()=>({token:'a'.repeat(64),extensionId:'a'.repeat(32)}));const page={recordId:'tab',revision:Date.now(),occurredAt:Date.now(),url:'https://docs.example.com/api?secret=1',title:'Reference',headings:['API'],description:'',selection:'private selection',excerpt:'',mode:'selection' as const,incognito:false as const,focused:true as const,visible:true as const,operation:'upsert' as const};expect(bridge.accept(page)).toBe(true);expect(s.life.current()[0].detail).not.toContain('private selection');expect(s.life.current()[0].detail).not.toContain('secret=1');expect(bridge.accept({...page,url:'https://evil.example.com'})).toBe(false);expect(bridge.accept({...page,occurredAt:Date.now()-300000})).toBe(false);expect(()=>bridge.accept({...page,incognito:true} as any)).toThrow();});
   it('requires exact extension origin, host and bearer on the local bridge',async()=>{const s=setup();const extensionId='a'.repeat(32),token='b'.repeat(64);const portServer=http.createServer();await new Promise<void>(r=>portServer.listen(0,'127.0.0.1',r));const port=(portServer.address() as any).port;await new Promise<void>(r=>portServer.close(()=>r()));const bridge=new ChromeBridge(s.life,()=>({extensionId,token}),port);cleanup.push(()=>bridge.stop());await bridge.start();const post=(origin:string,bearer=token)=>fetch(`http://127.0.0.1:${port}/v1/page`,{method:'POST',headers:{origin,authorization:'Bearer '+bearer,'content-type':'application/json'},body:'{}'});expect((await post('https://evil.example.com')).status).toBe(403);expect((await post('chrome-extension://'+extensionId,'bad')).status).toBe(401);expect((await post('chrome-extension://'+extensionId)).status).toBe(400);});

@@ -15,6 +15,8 @@ export class LifeService {
   private projects = new Map<string,ProjectAdapter>();
   private projectSignatures=new Map<string,string>();private chromeSignature='';
   private generation = 0;
+  private rawChrome = false;
+  enableRawChrome(sink: Parameters<ChromeBridge['setRawSink']>[0]) { this.rawChrome = true; this.chrome.setRawSink(sink); return this.start(); }
   constructor(dir: string, private secrets: SecretStore, invalidated: (source?: string) => void, private enabled: () => boolean, persist: () => boolean, checkpoints?: Checkpoints) {
     this.ledger=new LifeContext(dir,Date.now,source=>{invalidated(source);this.stage2?.invalidateLearning(source);},persist,checkpoints); this.assembler=new ContextAssembler(this.ledger,query=>this.stage2.receiver.query(query));
     this.stage2=new Stage2(dir,this.ledger,secrets,persist,enabled);
@@ -23,6 +25,13 @@ export class LifeService {
   }
   async start() {
     const generation = ++this.generation;
+    if (this.rawChrome) {
+      const source = this.ledger.source('chrome');
+      if (!source?.permissions.collect || source.paused) { this.chrome.stop(); this.chromeSignature = ''; return; }
+      const signature = createHash('sha256').update(JSON.stringify(source) + (this.secrets.get('lifeBridge') ?? '')).digest('hex');
+      if (signature !== this.chromeSignature || this.ledger.bridge.state !== 'listening') { this.chromeSignature = signature; await this.chrome.start(); }
+      return;
+    }
     const wanted=this.enabled()?this.ledger.view().sources.filter(s=>s.kind==='project'&&s.permissions.collect&&!s.paused):[];
     for(const [id,adapter]of this.projects)if(!wanted.some(s=>s.id===id&&JSON.stringify(s)===this.projectSignatures.get(id))){adapter.stop();this.projects.delete(id);this.projectSignatures.delete(id);}
     if(!this.enabled()){this.chrome.stop();this.chromeSignature='';}
@@ -39,7 +48,7 @@ export class LifeService {
     const config=LifeSource.parse(raw), old=this.ledger.source(config.id);
     if(!old)throw Error('Use Add project folder to authorize a new source.');
     if(config.kind!==old.kind||config.folder!==old.folder)throw Error('Re-select folders through the folder picker.');
-    config.sites=config.sites.map(site=>{const u=safePage(site);if(!u||new URL(site).origin!==site)throw Error('Use exact http(s) site origins, without paths.');return site;});
+    config.sites=config.sites.map(site=>{if(site==='*'&&config.kind==='chrome')return site;const u=safePage(site);if(!u||new URL(site).origin!==site)throw Error('Use exact http(s) site origins, or * for all Chrome websites.');return site;});
     if(config.id==='owntracks'&&config.permissions.learn)throw Error('Phone location stays local; external location memory is disabled.');
     if(config.permissions.learn && !['calendar','lastfm','owntracks'].includes(config.id)&&!(/^(gmail|outlook|teams)-[01]$/.test(config.id)||config.id==='academic'))throw Error('This source does not support long-term source learning.');
     if(config.permissions.learn && (!config.permissions.collect||!config.permissions.retain))throw Error('Source learning requires collection and local retention.');

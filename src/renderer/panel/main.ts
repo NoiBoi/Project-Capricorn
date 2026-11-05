@@ -291,11 +291,50 @@ async function renderChat() {
   statusEl = h('div', { class: 'status' });
   view.append(h('div', { class: 'chat' }, scroller, statusEl, h('div', { class: 'composer' }, ta, micBtn, muteBtn, stopBtn, sendBtn)));
 
+  const connection = await api.invoke('runtime2:session');
+  if (connection.enabled && revision === navigationRevision && tab === 'chat') {
+    micBtn.disabled = true;
+    const authStatus = h('span', {}, connection.sharing ? 'ChatGPT connected · ' + (connection.account ?? '') + ' · ' + (connection.model ?? 'Choose a model before chatting') : 'Connect ChatGPT to talk with Capri');
+    const refresh = async () => { const state = await api.invoke('runtime2:session'); authStatus.textContent = state.sharing ? 'ChatGPT connected · ' + (state.account ?? '') : 'ChatGPT is disconnected'; };
+    const act = async (action: 'signin' | 'enable' | 'disconnect' | 'cancel') => { try { await api.invoke('runtime2:auth', action); await refresh(); } catch { authStatus.textContent = 'ChatGPT connection did not complete. Try again.'; } };
+    scroller.before(h('div', { class: 'row' }, authStatus,
+      btn('Available models', async () => { try { const models = await api.invoke('runtime2:models'); authStatus.textContent = models.map(m => m.id + (m.contextTokens ? ' (' + m.contextTokens + ' tokens)' : ' (capacity unavailable)')).join(' · ') || 'No models available'; } catch { authStatus.textContent = 'Sign in and enable ChatGPT plan usage to load available models.'; } }),
+      btn('Sign in with ChatGPT', () => act('signin')), btn('Enable ChatGPT plan usage', () => act('enable')), btn('Cancel sign-in', () => act('cancel')), btn('Disconnect', () => act('disconnect')),
+      h('a', { href: 'https://chatgpt.com/#settings/Usage', target: '_blank', rel: 'noreferrer' }, 'Manage usage')));
+    const daily = await api.invoke('runtime2:daily-status');
+    if (daily) {
+      const quickStatus = h('span', {}, 'Recording off · Paused');
+      const status = h('pre', { style: 'white-space:pre-wrap;font-size:12px' });
+      const notice = h('div', { role: 'status' });
+      const model = h('select', { 'aria-label': 'Daily-test model' });
+      const current = h('option', { value: daily.config.model }, daily.config.model || 'Load account models'); model.append(current);
+      const inputs = new Map<string, HTMLInputElement>();
+      const fields = [['maxRequests','Session request ceiling'], ['requestsPerHour','Requests per hour'], ['ambientMs','Routine ambient interval (minutes)'], ['maxTokens','Reported token ceiling'], ['diskBudgetMB','Diagnostic disk budget (MB)']] as const;
+      const controls = fields.map(([key,label]) => { const input = h('input', { type: 'number', value: String(key === 'ambientMs' ? daily.config[key] / 60000 : daily.config[key]), 'aria-label': label }); inputs.set(key, input); return h('label', { style: 'display:flex;flex-direction:column;gap:4px' }, label, input); });
+      const inactivity = h('input', { type: 'checkbox', 'aria-label': 'Pace down when inactive' }); inactivity.checked = daily.config.inactivityPacing;
+      const refreshDaily = async () => {
+        const state = await api.invoke('runtime2:daily-status'); if (!state || revision !== navigationRevision) return;
+        quickStatus.textContent = (state.recording.active ? '● Recording' : 'Recording off') + (state.paused ? ' · Paused' : ' · Running');
+        status.textContent = (state.recording.active ? '● RECORDING' : 'Recording off') + (state.paused ? ' · Paused' : ' · Running') + '\n' + state.profile + '\nModel: ' + state.config.model + '\nRequests: ' + state.usage.requests + '/' + state.config.maxRequests + ' · Last hour: ' + state.usage.requestsLastHour + '/' + state.config.requestsPerHour + '\nTokens: ' + state.usage.inputTokens + ' in / ' + state.usage.outputTokens + ' out' + (state.usage.tokenTotalsIncomplete ? ' (incomplete)' : '') + '\nArchive: ' + ((state.readiness.archive as any)?.state ?? 'unavailable') + ' · Chrome: ' + ((state.readiness.chrome as any)?.deliveringRecently ? 'receiving authorized pages' : (state.readiness.chrome as any)?.paired ? 'paired; waiting for authorized page delivery' : 'pair in Connections') + '\nObservation: ' + (state.readiness.observation ? 'active' : 'paused or permission needed') + ' · Screenshots: ' + (state.readiness.screenshotPermission ? 'permitted; check capture to verify' : 'permission needed') + '\nMovement: ' + (state.readiness.movement ? 'available' : 'currently blocked') + (state.ledgerError ? '\n' + state.ledgerError : '') + (state.recording.error ? '\n' + state.recording.error : '');
+      };
+      const run = async (action: 'start'|'stop'|'pause'|'resume'|'folder'|'report'|'export'|'capture'|'permissions'|'package') => { try { notice.textContent = await api.invoke('runtime2:daily-control', action); } catch (error) { notice.textContent = String(error); } await refreshDaily(); };
+      const box = h('details', { open: true, style: 'max-height:42vh;overflow:auto;padding:12px;flex-shrink:0;border:1px solid #42334e;border-radius:8px;margin:8px 0' }, h('summary', {}, 'Runtime 2 daily test'),
+        h('p', {}, 'Start recording explicitly. Records full model context, authorized page text, dialogue and captured images locally. Stop pauses observation and cloud inference. No microphone or call audio. Use Connections to pair Chrome and authorize each site.'),
+        h('div', { class: 'row' }, btn('Load account models', async () => { try { const models = await api.invoke('runtime2:models'); model.replaceChildren(...models.filter(m => !/codex|luna/i.test(m.id + m.label) && m.contextTokens).map(m => h('option', { value: m.id }, m.label + ' · ' + m.id))); if (models.some(m => m.id === daily.config.model)) model.value = daily.config.model; } catch (e) { notice.textContent = String(e); } }), model),
+        h('div', { style: 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0' }, ...controls), h('label', {}, inactivity, ' Pace down when inactive'),
+        btn('Save settings', async () => { try { const config = { ...daily.config, model: model.value, inactivityPacing: inactivity.checked }; for (const [key,input] of inputs) (config as any)[key] = Number(input.value) * (key === 'ambientMs' ? 60000 : 1); await api.invoke('runtime2:daily-config', config); notice.textContent = 'Saved. Start or resume when ready.'; } catch(e) { notice.textContent = String(e); } await refreshDaily(); }),
+        h('div', { class: 'row' }, btn('Enable desktop context and movement', () => run('permissions'))),
+        h('div', { class: 'row' }, btn('Start diagnostic session', () => run('start')), btn('Stop session', () => run('stop')), btn('Pause', () => run('pause')), btn('Resume', () => run('resume'))),
+        h('div', { class: 'row' }, btn('Check capture', () => run('capture')), btn('Open report', () => run('report')), btn('Open diagnostic folder', () => run('folder')), btn('Create redacted export', () => run('export')), btn('Package private session', () => run('package'))), notice, status);
+      scroller.before(box, h('div', { class: 'row', style: 'padding:6px 0;flex-shrink:0' }, quickStatus, btn('Pause autonomy', () => run('pause')), btn('Stop recording', () => run('stop')))); await refreshDaily();
+      const timer = setInterval(() => { if (revision !== navigationRevision || !box.isConnected) { clearInterval(timer); return; } void refreshDaily().catch(() => {}); }, 3000);
+    }
+  }
   const hist = await api.invoke('chat:history', { limit: 200 });
   if (revision !== navigationRevision || tab !== 'chat') return;
   if (!hist.length) {
     messagesEl.append(h('div', { class: 'empty' }, h('div', {}, 'Say something.'),
-      h('div', { class: 'try' }, ...['Who are you?', 'Teleport', 'Timer 5 minutes'].map((q) => h('button', { type: 'button', onclick: () => send(q) }, q)))));
+      h('div', { class: 'try' }, ...(connection.enabled ? ['Who are you?', 'What have you noticed?'] : ['Who are you?', 'Teleport', 'Timer 5 minutes']).map((q) => h('button', { type: 'button', onclick: () => send(q) }, q)))));
   }
   const shownIds = new Set(hist.map((m) => m.id));
   const early = [...messagesEl.children].filter((el) => !shownIds.has((el as HTMLElement).dataset.id ?? ''));
@@ -1013,7 +1052,7 @@ async function renderConnections() {
       source.folder ? note('Selected folder: '+source.folder) : null,
       field('Display name',name),permission('collect','Collect observations'),permission('live','Use in live dialogue'),permission('proactive','Use in proactive remarks'),permission('retain','Retain source history locally'),permission('content','Allow bounded content access'),
       (['calendar','lastfm','academic'].includes(source.id)||/^(gmail|outlook|teams)-[01]$/.test(source.id)) ? permission('learn','Learn summarized observations in Honcho') : null,
-      source.kind==='chrome' ? field('Allowed site origins, one per line',sites,'Chrome must also grant each site. Sensitive pages remain blocked.',true) : null,
+      source.kind==='chrome' ? field('Allowed site origins, one per line',sites,'Use * to allow all websites. The extension must also have all-websites permission. Sensitive pages remain blocked.',true) : null,
       field('Retention days',days,'1 to 30 days; current state still expires sooner.'),
       h('div',{class:'row'},
         btn('Save source controls',()=>run(async()=>{changed.name=name.value.trim();changed.retentionDays=Number(days.value);if(source.kind==='chrome')changed.sites=sites.value.split(/\s+/).filter(Boolean);await api.invoke('life:configure',changed); })),
