@@ -1,4 +1,5 @@
 import { selectAmbientDialogue } from './dialogueSelection';
+import { selectSemanticEvidence, type EvidenceDecision } from './evidenceSelection';
 import { episodeSummary } from './archiveTools';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
@@ -12,7 +13,7 @@ import { AttentionController, type WatchCondition } from './attention';
 import { Perception, type DesktopHost } from './perception';
 import type { CanonicalState } from './canonicalState';
 import type { DailySession } from './dailySession';
-import { contentDelta, excerptObservation, observationSlot, sceneFact } from './workingObservations';
+import { contentDelta, observationSlot, sceneFact } from './workingObservations';
 export type CognitionMode = 'layered' | 'lean' | 'two-speed';
 export interface LoopOptions { cognition?: CognitionMode; model?: string; contextBudget?: number; ambientMs?: number; timeoutMs?: number; host?: DesktopHost; daily?: DailySession; emit?: (channel: string, payload: unknown) => void }
 export class CognitiveLoop {
@@ -97,7 +98,7 @@ export class CognitiveLoop {
       for (const id of state.evidence) {
         if (!evidence.has(id)) evidence.set(id, await this.archive.get(id));
         const observation = evidence.get(id);
-        if (observation ? (observation.disclosure?.retainUntil ?? Infinity) <= Date.now() || !this.options.host.allowed('disclose', observation, mode) : !await this.archive.hasDialogue(id)) { allowed = false; break; }
+        if (observation ? (observation.disclosure?.retainUntil ?? Infinity) <= Date.now() || !this.options.host.allowed('disclose', observation, mode) : !this.host?.allowed('conversation') || !await this.archive.hasDialogue(id)) { allowed = false; break; }
       }
       if (allowed) { result.push(state); this.unavailableReviews.delete(state.id); } else if (mode === 'ambient') this.unavailableReviews.add(state.id);
     }
@@ -246,6 +247,7 @@ export class CognitiveLoop {
       const suppliedReviews = new Set<string>();
       const actualResults = new Map<string, { result: unknown; round: number; evidence: string[] }>();
       const images: { observationId: string; dataUrl: string }[] = [];
+      let initiatingEvidence: string[] = [], initiatingImages: string[] = [];
       const failedCaptures = new Set<string>();
       const cognition = this.options.cognition ?? 'two-speed';
       let deep = !ambient || (cognition === 'two-speed' && due.some(s => s.kind === 'investigation'));
@@ -267,31 +269,41 @@ export class CognitiveLoop {
             this.archive.readScene(),
           ]);
           signal.throwIfAborted();
+          const mode = ambient ? 'ambient' : 'direct';
+          if (this.options.host && !this.options.host.allowed('disclose', undefined, mode)) throw Error('Cloud disclosure is currently paused');
+          const allowedState = await this.permittedState(mode);
           page.records = [...new Map([...dialogue.records, ...page.records].map(record => [record.id, record])).values()].sort((a, b) => a.sequence - b.sequence);
           const priorReceipts = page.records.flatMap(r => r.kind === 'tool-result' && !actualResults.has(r.requestId)
             ? [{ capability: r.receipt.capability, at: r.at, outcome: r.receipt.outcome, detail: r.receipt.detail }] : []).slice(-4);
           const completedAfter = this.normalBaselineAt ?? 0;
           const retiredDialogue = new Set<string>();
           let endedTasks: {id:string;status:string;evidence:string[]}[] = [];
-          if (lean) {
-            const ended = await Promise.all(['completed', 'abandoned'].map(status => this.archive.findState({ kind: 'investigation', status: status as 'completed' | 'abandoned', limit: 50 })));
+          if (this.host && !this.host.allowed('conversation')) page.records = page.records.filter(r=>r.kind!=='user' && r.kind!=='assistant');
+          if (ambient && (!this.host || this.host.allowed('conversation'))) {
+            const ended = await Promise.all(['completed', 'abandoned', 'retired'].map(status => this.archive.findState({ kind: 'investigation', status: status as 'completed' | 'abandoned' | 'retired', limit: 50 })));
             endedTasks=(await this.permittedState('ambient',ended.flat())).map(({id,status,evidence})=>({id,status,evidence}));
             for(const state of endedTasks)for(const id of state.evidence)retiredDialogue.add(id);
-            const states = await this.permittedState('ambient');
+            const states = allowedState;
             const active = this.options.host?.active();
             const subjects = this.options.host?.windows().filter(w=>w.handle===active).map(w=>w.title) ?? [];
             const ongoing=states.filter(s=>s.status==='active'&&['interest','intention','investigation','checkpoint'].includes(s.kind)&&!(s.kind==='checkpoint'&&s.evidence.some(id=>retiredDialogue.has(id))));
-            page.records = await selectAmbientDialogue(this.archive,page.records,completedAfter,subjects,
-              ongoing.flatMap(s=>s.evidence),new Set(ended.flat().flatMap(s=>s.evidence)));
+            const selected = await selectAmbientDialogue(this.archive,page.records,completedAfter,subjects,
+              ongoing.flatMap(s=>s.evidence),retiredDialogue);
+            page.records = [...selected, ...page.records.filter(r => (r.kind === 'tool-call' || r.kind === 'tool-result') && actualResults.has(r.requestId))]
+              .sort((a,b)=>a.sequence-b.sequence);
           }
-          const mode = ambient ? 'ambient' : 'direct';
-          if (this.options.host && !this.options.host.allowed('disclose', undefined, mode)) throw Error('Cloud disclosure is currently paused');
           const live = this.perception?.current(mode) ?? [];
           const liveSlots = new Map(live.map(o => [observationSlot(o), o]));
           const bySlot = new Map(scene.latest.map(o => [observationSlot(o), o]));
           for (const o of live) bySlot.set(observationSlot(o), o);
           const permitted = (o: import('./contracts').Observation) =>
             (o.disclosure?.retainUntil ?? Infinity) > Date.now() && (!this.options.host || this.options.host.allowed('disclose', o, mode));
+          // Resolve once per round. Carry IDs, never stale authorized payloads, across rounds.
+          const resolved = new Map<string, import('./contracts').Observation | undefined>();
+          const resolve = async (id: string) => {
+            if (!resolved.has(id)) resolved.set(id, await this.archive.get(id));
+            return resolved.get(id);
+          };
           const now = Date.now(), active = this.options.host?.active();
           const isCurrent = (o: import('./contracts').Observation) =>
             active != null && liveSlots.get(observationSlot(o))?.id === o.id && o.content.handle === active;
@@ -308,28 +320,71 @@ export class CognitiveLoop {
           if (round === 0 && model.supportsImages && this.perception) {
             images.push(...await this.perception.currentImages(mode, signal, changes));
           }
-          // Direct questions get a one-request fast path to newly changed visible text.
-          const immediate = round === 0 ? (!ambient ? live.filter(o => o.modality === 'browser-page' && isCurrent(o) && permitted(o)).slice(0, 1)
-            : lean ? [...new Map([...live, ...changes, ...bySlot.values()].filter(o => ['browser-page','application-text','accessibility'].includes(o.modality) && permitted(o)).map(o => [o.id, o])).values()]
-              .sort((a,b) => Number(isCurrent(b)) - Number(isCurrent(a)) || Number(changedIds.has(b.id)) - Number(changedIds.has(a.id)) || b.at - a.at).slice(0,2) : []) : [];
+          const relevantEvidence = new Set(allowedState.flatMap(s=>s.evidence));
+          const continuity: EvidenceDecision[] = [];
+          const carried = (await Promise.all(initiatingEvidence.map(resolve))).filter((o): o is import('./contracts').Observation => !!o && permitted(o));
+          for (const id of initiatingEvidence) if (!carried.some(o=>o.id===id)) {
+            const o = resolved.get(id);
+            continuity.push({id,representation:'omitted',reason:!o?'archive-unavailable':(o.disclosure?.retainUntil??Infinity)<=Date.now()?'retention-expired':'permission'});
+          }
+          const semantic = round === 0 ? await selectSemanticEvidence({
+            candidates: !ambient ? live.filter(o=>isCurrent(o)) : lean ? [...live, ...scene.recent, ...scene.changes, ...bySlot.values()] : [],
+            changed: changedIds, relevant: relevantEvidence, current: isCurrent, permitted,
+            resolve: async o => {
+              // A non-retained live observation is eligible only in this immediate request.
+              if (o.disclosure?.retain === false && live.some(l=>l.id===o.id)) return o;
+              return resolve(o.id);
+            },
+          }) : await selectSemanticEvidence({ candidates: carried, changed: new Set(initiatingEvidence), relevant: relevantEvidence,
+            current: isCurrent, permitted, resolve: o=>resolve(o.id) });
+          const immediate = semantic.records.flatMap(r=>r.kind==='observation' && r.observation ? [r.observation] : []);
           const history = page.records.filter(r => r.kind === 'tool-call' || r.kind === 'tool-result'
             ? actualResults.has(r.requestId)
             : lean || cognitiveMode !== 'routine' || dialogue.records.some(d => d.id === r.id));
-          const presented = history.map(original => {
-            if (original.kind !== 'tool-result') return original;
+          const presented = [] as typeof history;
+          for (const original of history) {
+            if (original.kind !== 'tool-result') { presented.push(original); continue; }
             const entry = actualResults.get(original.requestId);
             const result = entry?.result;
-            if (!this.permittedResult(result, mode)) return { ...original, result: { withheld: 'Evidence disclosure is currently denied.' }, receipt: { ...original.receipt, outcome: 'denied' as const } };
+            const referencesAllowed = !entry || (await Promise.all(entry.evidence.map(async id => {
+              const observation = await resolve(id);
+              return observation ? permitted(observation) : (!this.host || this.host.allowed('conversation')) && await this.archive.hasDialogue(id);
+            }))).every(Boolean);
+            if (!referencesAllowed || !this.permittedResult(result, mode)) {
+              presented.push({ ...original, result: { withheld: 'Evidence unavailable or disclosure is currently denied.' }, receipt: { ...original.receipt, outcome: 'denied' as const } }); continue;
+            }
             // The first continuation receives the complete result. Older large payloads
             // remain recoverable by ID when the investigation moves to later rounds.
             if (entry && entry.round + 2 < round && entry.evidence.length && approximateTokens(result) > 12000) {
-              return { ...original, result: { earlierEvidenceIds: entry.evidence, detail: 'Previously supplied; retrieve again for full details.' } };
+              presented.push({ ...original, result: { earlierEvidenceIds: entry.evidence, detail: 'Previously supplied; retrieve again for full details.' } }); continue;
             }
-            return { ...original, result };
-          });
-          for (const o of immediate) presented.push(excerptObservation({
-            id: o.id, kind: 'observation', observationId: o.id, sequence: 0, at: o.at, observation: o,
-          }));
+            presented.push({ ...original, result });
+          }
+          const resultEvidence = new Set(presented.flatMap(r=>r.kind==='tool-result' && r.receipt.outcome==='completed' && r.result===actualResults.get(r.requestId)?.result ? actualResults.get(r.requestId)?.evidence ?? [] : []));
+          for (const record of semantic.records) {
+            if (resultEvidence.has(record.id)) { continuity.push({id:record.id,representation:'tool-result',reason:'duplicate-excerpt-avoided'}); continue; }
+            presented.push(record);
+          }
+          // Reuse one initiating image on the first deep continuation only. Later rounds
+          // receive its archive reference; deliberate retrieve_evidence can attach it again.
+          if (round === 1 && deep && model.supportsImages) {
+            const ranked = [...initiatingImages].sort((a,b)=>Number(relevantEvidence.has(b))-Number(relevantEvidence.has(a)));
+            for (const id of ranked.slice(0,1)) {
+              if (images.some(i=>i.observationId===id) || images.length >= 2) continue;
+              const o = await resolve(id);
+              const blob = o && permitted(o) && o.original ? await this.archive.getEvidence(o.original.id) : undefined;
+              if (blob) images.push({observationId:id,dataUrl:`data:${blob.metadata.mime};base64,${Buffer.from(blob.data).toString('base64')}`});
+              else continuity.push({id,representation:'omitted',reason:'image-unavailable-permission-or-retention'});
+            }
+          }
+          // Recheck expiry and source revocation even for pending tool-produced images.
+          for (let i=images.length-1;i>=0;i--) {
+            const o = await resolve(images[i].observationId);
+            if (!o || !permitted(o) || !o.original || !await this.archive.getEvidence(o.original.id)) {
+              continuity.push({id:images[i].observationId,representation:'omitted',reason:'image-unavailable-permission-or-retention'}); images.splice(i,1);
+            }
+          }
+          await Promise.all(initiatingImages.map(resolve));
           const metadataIds = new Set([...facts.filter(o => changedIds.has(o.id)), ...recentChanges].map(o => o.id));
           const sceneCoverage = scene.coverage.recorded ? {
             after: scene.coverage.after, through: scene.coverage.through, recorded: scene.coverage.recorded,
@@ -354,7 +409,7 @@ export class CognitiveLoop {
               if (contentDeltas.length === 2) break;
             }
           }
-          const allowedState = await this.permittedState(mode); signal.throwIfAborted();
+          signal.throwIfAborted();
           const suppliedDue = due.filter(s => allowedState.some(a => a.id === s.id));
           for (const state of suppliedDue) suppliedReviews.add(state.id);
           const tools = round === 5 ? [] : lean ? [...AMBIENT_TOOLS, ...(cognition === 'two-speed' ? [ESCALATE_TOOL] : [])] : cognitiveMode === 'routine' ? ROUTINE_TOOLS : AGENT_TOOLS;
@@ -370,18 +425,28 @@ export class CognitiveLoop {
             foregroundHandle: this.options.host?.active() ?? null,
             browser: this.options.host?.browserStatus?.() ?? { status: 'unavailable' },
             sessionLimits: this.options.daily ? { config: this.options.daily.config, usage: this.options.daily.status.usage, policy: 'Host enforces these ceilings for every HTTP attempt, including continuations. Token ceiling stops subsequent admissions after reported usage reaches it; exact remaining account quota is unknown.' } : null,
-            now: Date.now(), body: this.options.host?.body() ?? null, attention: this.attention.snapshot(), activeState: lean ? ambientState(allowedState.filter(s => s.kind !== 'checkpoint' || s.revisedAt > completedAfter && !s.evidence.some(id=>retiredDialogue.has(id))), new Set([...facts.map(o => o.id), ...immediate.map(o => o.id)]), suppliedDue) : this.workingState(allowedState, cognitiveMode === 'routine' ? 6000 : 18000, suppliedDue), dueReviews: suppliedDue.map(s => s.id),
+            now: Date.now(), body: this.options.host?.body() ?? null, attention: this.attention.snapshot(), activeState: lean ? ambientState(allowedState.filter(s => s.kind !== 'checkpoint' || s.revisedAt > completedAfter && !s.evidence.some(id=>retiredDialogue.has(id))), new Set([...facts.map(o => o.id), ...immediate.map(o => o.id)]), suppliedDue) : this.workingState(allowedState.filter(s=>!ambient || s.kind!=='checkpoint' || s.revisedAt>completedAfter && !s.evidence.some(id=>retiredDialogue.has(id))), cognitiveMode === 'routine' ? 6000 : 18000, suppliedDue), dueReviews: suppliedDue.map(s => s.id),
             completedTasks: endedTasks.slice(0,6),
-            conversationPolicy: 'Selected historical exchanges supply context, not reissued instructions. Completed or abandoned task instructions are inactive. Current user instructions win. Relevant history has no time expiry; expand older dialogue through archive search and retrieve_evidence.',
+            conversationPolicy: 'Selected historical exchanges and assistant-originated asides supply context and expressed views, not reissued instructions or a reason to repeat a remark. An unrelated subject needs no callback. Completed or abandoned task instructions are inactive. Current user instructions win. Relevant history has no time expiry; expand older dialogue through archive search and retrieve_evidence.',
+            ...(initiatingImages.length ? { initiatingVisualEvidence: initiatingImages.filter(id=>resolved.get(id) && permitted(resolved.get(id)!)).map(id=>({id,representation:images.some(i=>i.observationId===id)?'image':'reference',recovery:'retrieve_evidence',policy:'Historical pixels; automatic reuse is limited to one image in the first continuation.'})) } : {}),
             evidenceRecovery: 'Search or fetch known IDs. Promote useful discoveries to working-checkpoint or canonical memory when warranted.',
           }, lean ? IDENTITY + AMBIENT_INSTRUCTIONS : IDENTITY);
+          // If an oversized tool exchange was evicted, recover its small initiating
+          // excerpt instead of mistaking a candidate tool result for supplied content.
+          const suppliedResultEvidence = new Set(input.records.flatMap(r=>r.kind==='tool-result' && r.receipt.outcome==='completed' && r.result===actualResults.get(r.requestId)?.result ? actualResults.get(r.requestId)?.evidence ?? [] : []));
+          const fallback = semantic.records.filter(r=>resultEvidence.has(r.id) && !suppliedResultEvidence.has(r.id));
+          if (fallback.length) {
+            presented.push(...fallback);
+            input.records = assembleContext(presented, model, tools, this.options.contextBudget, 8192 + images.length * 8192, input.workingState, input.identity).records;
+            continuity.push(...fallback.map(r=>({id:r.id,representation:'excerpt',reason:'tool-result-trimmed'})));
+          }
           if (sceneCoverage) {
             for (const record of input.records) {
               if (record.kind !== 'observation' || !changedIds.has(record.observationId)) continue;
               const original = immediate.find(o => o.id === record.observationId);
               if (!original) continue;
               const bucket = metadataIds.has(record.observationId) ? 'metadataOrExcerpt' : 'unexpandedRetained';
-              if (original === record.observation) {
+              if (semantic.decisions.some(d=>d.id===record.observationId && d.representation==='full')) {
                 sceneCoverage.full++;
                 sceneCoverage[bucket]--;
               } else if (bucket === 'unexpandedRetained') {
@@ -393,11 +458,26 @@ export class CognitiveLoop {
           if (images.length) {
             input.images = images.splice(0,2);
             for (const image of input.images) {
-              const observation = await this.archive.get(image.observationId);
-              if (!observation || this.options.host && !this.options.host.allowed('disclose', observation, mode)) throw Error('Image permission or evidence reference unavailable');
+              const observation = await resolve(image.observationId);
+              if (!observation || !permitted(observation)) throw Error('Image permission or evidence reference unavailable');
               image.capturedAt = observation.at;
             }
           }
+          if (round === 0) {
+            initiatingEvidence = input.records.flatMap(r=>r.kind==='observation' ? [r.observationId] : []).slice(0,2);
+            initiatingImages = (input.images ?? []).map(i=>i.observationId).slice(0,2);
+          }
+          recorder?.event('evidence.selection', { round, initiatingEvidence, initiatingImages,
+            decisions: [...semantic.decisions, ...continuity], archiveReads: semantic.archiveReads,
+            candidateIds: [...new Set([...scene.recent, ...scene.changes, ...bySlot.values()].map(o=>o.id))],
+            metadataIds: [...new Set([...facts, ...recentChanges].map(o=>o.id))],
+            selected: input.records.flatMap(r=>r.kind==='observation' ? [{id:r.observationId,representation:semantic.decisions.find(d=>d.id===r.id)?.representation??'excerpt',visibility:r.evidenceContext}] : []),
+            toolEvidenceIds: [...new Set(input.records.flatMap(r=>r.kind==='tool-result' && r.receipt.outcome==='completed' ? actualResults.get(r.requestId)?.evidence ?? [] : []))],
+            dialogueIds: input.records.filter(r=>r.kind==='user'||r.kind==='assistant').map(r=>r.id),
+            imageIds: (input.images ?? []).map(i=>i.observationId),
+            semanticUtf8Bytes: Buffer.byteLength(JSON.stringify(input.records.filter(r=>r.kind==='observation'))),
+            budgetOmissions: presented.filter(r=>!input.records.some(s=>s.id===r.id)).map(r=>r.id),
+          }, {cycleId});
           partial = ''; responseId = randomUUID();
           const networkId = randomUUID(); this.options.daily?.requestIdentity(networkId);
           if (recorder?.status.active) {

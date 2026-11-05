@@ -34,7 +34,8 @@ export function sceneFact(o: Observation, current: boolean, now: number) {
 
 export function excerptObservation(record: ObservationRecord): ObservationRecord {
   const o = record.observation!;
-  if (!o.content.sections && (o.content.text?.length ?? 0) <= 3000) return record;
+  if (!o.content.sections && Buffer.byteLength(o.content.text ?? '') <= 3000 && Buffer.byteLength(JSON.stringify(o)) <= 6000) return record;
+  const clip = (text: string, bytes: number) => Buffer.from(text).subarray(0, bytes).toString('utf8').replace(/\uFFFD$/, '');
   let left = 3000;
   const changed = new Set(o.content.changedSections);
   const indexed = o.content.sections?.map((section, index) => ({ section, index }));
@@ -42,12 +43,18 @@ export function excerptObservation(record: ObservationRecord): ObservationRecord
   const first = (relevant?.length ?? 0) > 1 ? relevant : indexed;
   const sections = first?.slice(0, 12).flatMap(({ section }) => {
     if (left <= 0) return [];
-    const text = section.text.slice(0, left);
-    left -= text.length;
+    const text = clip(section.text, left);
+    left -= Buffer.byteLength(text);
     return [{ ...section, path: section.path.slice(0, 160), text }];
   });
-  return { ...record, observation: { ...o, content: { ...o.content, ...(o.content.text === undefined ? {} : { text: o.content.text.slice(0, 3000) }), ...(sections ? { sections } : {}) },
-    loss: { truncated: true, missing: [...o.loss.missing, 'working-excerpt-retrieve-original-by-id'] } } };
+  // A page often contains the same body as both text and sections. Share one byte
+  // budget and preserve IDs so the original remains deliberately retrievable.
+  return { ...record, observation: { ...o,
+    related: o.related?.slice(0,16),
+    provenance: { ...o.provenance, collector: o.provenance.collector.slice(0,160), metadata: Object.fromEntries(Object.entries(o.provenance.metadata).slice(0,8).map(([key,value])=>[key.slice(0,64),value.slice(0,160)])) },
+    content: { ...o.content, title: o.content.title.slice(0,160), process: o.content.process.slice(0,160), url: o.content.url?.slice(0,500),
+      text: sections?.length ? undefined : clip(o.content.text ?? '', 3000), sections },
+    loss: { truncated: true, missing: [...o.loss.missing.slice(0,8).map(s=>s.slice(0,160)), 'working-excerpt-retrieve-original-by-id'] } } };
 }
 
 export function observedText(o: Observation) {

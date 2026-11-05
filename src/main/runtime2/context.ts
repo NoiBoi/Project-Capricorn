@@ -9,11 +9,13 @@ export const AMBIENT_INSTRUCTIONS = '\nORDINARY COMPANY: Inhabit the shared char
 
 /** Explicit evaluation resets establish boundaries. Age alone never expires a conversation. */
 export function ambientDialogue(records: ConversationRecord[], completedAfter: number, _now: number, relevantIds: ReadonlySet<string> = new Set()) {
-  const dialogue = records.filter(r => (r.kind === 'user' || r.kind === 'assistant') && r.at > completedAfter);
-  // Preserve whole exchanges, allowing a long coherent recent exchange to exceed the soft target.
+  const dialogue = records.filter(r => (r.kind === 'user' || r.kind === 'assistant') && r.at > completedAfter)
+    .map(r => 'text' in r && r.text.length > 2000 ? { ...r, text: r.text.slice(0, 2000) + '\n[Excerpt; retrieve original dialogue by ID: ' + r.id + ']' } : r);
+  // Keep a user and the following reply together; subsequent autonomous asides
+  // remain independently selectable under the same hard context bound.
   const exchanges: ConversationRecord[][] = [];
   for (const record of dialogue) {
-    if (record.kind === 'user' || !exchanges.length) exchanges.push([]);
+    if (record.kind === 'user' || !exchanges.length || exchanges.at(-1)!.at(-1)?.kind === 'assistant') exchanges.push([]);
     exchanges.at(-1)!.push(record);
   }
   const selected: ConversationRecord[][] = []; let count = 0, bytes = 0;
@@ -21,7 +23,7 @@ export function ambientDialogue(records: ConversationRecord[], completedAfter: n
     .sort((a,b)=>Number(b.relevant)-Number(a.relevant)||b.index-a.index);
   for (const {exchange} of ranked) {
     const size = Buffer.byteLength(JSON.stringify(exchange));
-    if (selected.length && (count + exchange.length > 12 || bytes + size > 4500)) continue;
+    if (count + exchange.length > 12 || bytes + size > 4500) continue;
     selected.unshift(exchange); count += exchange.length; bytes += size;
   }
   return selected.flat().sort((a,b)=>a.sequence-b.sequence);
@@ -92,7 +94,7 @@ export function encodeInput(input: ModelInput): ResponseInput {
     switch (record.kind) {
       case 'user': return { role: 'user', content: JSON.stringify({ type: 'user_message', id: record.id, at: record.at, text: record.text }) };
       case 'assistant': return { role: 'assistant', content: record.text };
-      case 'observation': return { role: 'user', content: JSON.stringify({ type: 'host_observation', reference: record.observationId, at: record.at, observation: record.observation ?? null }) };
+      case 'observation': return { role: 'user', content: JSON.stringify({ type: 'host_observation', reference: record.observationId, at: record.at, evidenceContext: record.evidenceContext ?? 'historical', observation: record.observation ?? null }) };
       case 'tool-call': return { type: 'function_call', call_id: record.requestId, name: record.name, namespace: 'capri_archive', arguments: record.arguments };
       case 'tool-result': return { type: 'function_call_output', call_id: record.requestId, output: JSON.stringify({ receipt: record.receipt, result: record.result ?? null }) };
     }

@@ -513,7 +513,7 @@ it('restores a watch and recovers a matched event that was journaled before ackn
   await idle(loop);
   expect(inputs[0].workingState).toMatchObject({
     matchedCondition: { source: 'watched', condition: 'content-changed' },
-    sceneCoverage: { recorded: 1, full: 1, metadataOrExcerpt: 0 },
+    sceneCoverage: { recorded: 1, full: 0, metadataOrExcerpt: 1 },
   });
   expect((await restored.readScene()).coverage.recorded).toBe(0);
   expect((await restored.readAttention())?.nextReviewAt).toBeUndefined();

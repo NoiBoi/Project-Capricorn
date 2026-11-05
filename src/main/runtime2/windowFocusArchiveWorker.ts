@@ -373,11 +373,18 @@ function dispatch(request: ArchiveRequest): unknown {
       const hit=db.prepare("SELECT sequence FROM conversation_records WHERE id=? AND json_extract(payload,'$.kind') IN ('user','assistant')").get(request.input.id);
       if(!hit)return [];
       const start=db.prepare("SELECT max(sequence) AS n FROM conversation_records WHERE sequence<=? AND json_extract(payload,'$.kind')='user'").get(Number(hit.sequence))?.n;
-      if(start==null)return [];
+      if(start==null) {
+        const row=db.prepare('SELECT sequence,payload FROM conversation_records WHERE id=?').get(request.input.id)!;
+        return [{...JSON.parse(String(row.payload)),sequence:Number(row.sequence)}];
+      }
       const end=db.prepare("SELECT min(sequence) AS n FROM conversation_records WHERE sequence>? AND json_extract(payload,'$.kind')='user'").get(Number(start))?.n;
       const rows=db.prepare("SELECT sequence,payload FROM conversation_records WHERE sequence>=? AND sequence<? AND json_extract(payload,'$.kind') IN ('user','assistant') ORDER BY sequence LIMIT 65").all(Number(start),end==null?Number.MAX_SAFE_INTEGER:Number(end));
-      // Oversized exchanges remain explicitly retrievable; never supply a clipped exchange as complete.
-      if(rows.length>64||rows.reduce((n,r)=>n+Buffer.byteLength(String(r.payload)),0)>24000)return [];
+      // An oversized surrounding exchange must not hide its relevant expressed
+      // view. Return the selected journal record alone, with its real chronology.
+      if(rows.length>64||rows.reduce((n,r)=>n+Buffer.byteLength(String(r.payload)),0)>24000) {
+        const row=db.prepare('SELECT sequence,payload FROM conversation_records WHERE id=?').get(request.input.id)!;
+        return [{...JSON.parse(String(row.payload)),sequence:Number(row.sequence)}];
+      }
       return rows.map(r=>({...JSON.parse(String(r.payload)),sequence:Number(r.sequence)}));
     }
     case 'getDialogue': {
@@ -414,6 +421,9 @@ function dispatch(request: ArchiveRequest): unknown {
       const source = request.input.source; if (!['chrome','screen'].includes(source)) throw Error('Invalid source');
       // Retrieved evidence can be embedded in tool results and interpretation. Preserve direct user statements,
       // purge derived state and tool history rather than retaining revoked content through a back door.
+      // An in-flight request may acknowledge a now-deleted observation boundary.
+      // Advance over the purged window before deletion, without admitting future IDs.
+      db!.exec('UPDATE logical_conversation SET scene_cursor=max(scene_cursor,coalesce((SELECT max(sequence) FROM conversation_records WHERE observation_id IS NOT NULL),0));');
       db!.exec("DELETE FROM conversation_records WHERE json_extract(payload, '$.kind') != 'user'; DELETE FROM canonical_state; DELETE FROM activity_episodes; UPDATE logical_conversation SET attention=NULL;");
       db!.prepare("DELETE FROM observations WHERE json_extract(payload, '$.disclosure.source')=? OR ?='screen' OR lower(process) IN ('chrome','chrome.exe')").run(source,source);
       db!.exec('DELETE FROM evidence');
