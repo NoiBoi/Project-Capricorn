@@ -50,7 +50,7 @@ it('passes a real source observation to inference and executes sequential archiv
   source.subscribe(o => { observed = o; }); source.sample({ handle: '5', title: 'Original evidence', process: 'editor.exe', pid: 42 }, 100);
   await a.write(observed); loop.notifyObservation();
   await loop.send('What did you notice?'); await idle(loop);
-  expect(inputs[0].records.find(r => r.kind === 'observation')).toMatchObject({ observationId: observed.id, observation: observed });
+  expect(inputs[0].workingState).toMatchObject({ scene: { facts: [expect.objectContaining({ id: observed.id, authority: 'host' })] } });
   expect(inputs[0].identity).toContain('CAPRI:');
   expect(inputs[1].records.find(r => r.kind === 'tool-result')).toMatchObject({ requestId: 'call-recent', receipt: { outcome: 'completed' }, result: { observations: [observed] } });
   expect(inputs[2].records.filter(r => r.kind === 'tool-result')).toHaveLength(2);
@@ -113,7 +113,7 @@ it('Runtime2 connects its collector only after archive initialization and trigge
   cleanup.push(() => runtime.shutdown()); await runtime.initialize(listener => source.subscribe(listener));
   source.sample({ handle: '1', title: 'Source to model', process: 'native.exe' }, Date.now());
   await expect.poll(() => vi.mocked(p.infer).mock.calls.length).toBe(1);
-  expect(vi.mocked(p.infer).mock.calls[0][1].records.some(r => r.kind === 'observation' && r.observation?.content.title === 'Source to model')).toBe(true);
+  expect(vi.mocked(p.infer).mock.calls[0][1].workingState).toMatchObject({ scene: { facts: [expect.objectContaining({ title: 'Source to model' })] } });
 });
 it('keeps identity pinned, trims whole tool groups, and enforces context capacity and output headroom', () => {
   const fixed = approximateTokens({ identity: IDENTITY, tools: ARCHIVE_TOOLS });
@@ -144,7 +144,7 @@ it('migrates an actual Phase 2 schema without changing original observations and
   original.id = 'x'.repeat(256);
   await a.write(original); await a.close();
   // Remove only Phase 3 tables in a worker, recreating the Phase 2 on-disk schema.
-  const worker = new Worker(`const {workerData}=require('node:worker_threads'); const {DatabaseSync}=require('node:sqlite'); const db=new DatabaseSync(workerData); db.exec('DROP TABLE conversation_records; DROP TABLE logical_conversation; PRAGMA user_version=1;'); db.close();`, { eval: true, workerData: path.join(profile, 'runtime2', 'experience.sqlite') });
+  const worker = new Worker(`const {workerData}=require('node:worker_threads'); const {DatabaseSync}=require('node:sqlite'); const db=new DatabaseSync(workerData); db.exec('DROP TRIGGER scene_delete; DROP TABLE scene_sources; DROP TABLE conversation_records; DROP TABLE logical_conversation; PRAGMA user_version=1;'); db.close();`, { eval: true, workerData: path.join(profile, 'runtime2', 'experience.sqlite') });
   await new Promise<void>((resolve,reject) => { worker.once('exit', code => code === 0 ? resolve() : reject(Error('Fixture worker failed'))); worker.once('error',reject); });
   const b = await create(); expect(await b.get(original.id)).toEqual(original);
   expect((await b.conversation()).records).toMatchObject([{ kind: 'observation', observationId: original.id, observation: original }]);

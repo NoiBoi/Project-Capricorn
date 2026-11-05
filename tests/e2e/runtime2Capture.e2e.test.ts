@@ -89,7 +89,7 @@ it('captures an external controlled native window through production, sends JPEG
     expect(restored.state).toEqual(result.state); expect(restored.data).toBe(image.dataUrl.split(',')[1]);
     await expect.poll(() => app!.evaluate(() => (globalThis as any).__capri.runtime2.chatState.busy)).toBe(false);
     const resumed = await app.evaluate(() => (globalThis as any).__restoredInputs);
-    expect(resumed[0].identity).toContain('native-intention');
+    expect(resumed[0].workingState.activeState).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'native-intention' })]));
     expect(resumed[1].images[0].dataUrl).toBe(image.dataUrl);
     if (process.env.CAPRI_RETEST_OUTPUT) {
       const output = path.resolve(process.env.CAPRI_RETEST_OUTPUT); fs.mkdirSync(output, { recursive: true });

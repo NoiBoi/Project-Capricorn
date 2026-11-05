@@ -5,8 +5,18 @@ import type { AttentionState } from './attention';
 export const DEFAULT_RETENTION = { maxAgeMs: 30 * 86400000, maxRecords: 50_000 };
 export interface RetentionPolicy { maxAgeMs: number; maxRecords: number }
 export interface ArchiveQuery { limit?: number; search?: string; from?: number; to?: number }
+export interface DialogueEvidence { id: string; at: number; kind: 'user' | 'assistant'; text: string }
+export interface DiscoveryQuery extends ArchiveQuery {
+  offset?: number; source?: string; modality?: Observation['modality'] | 'dialogue'; relatedId?: string;
+}
 export interface ArchiveStats { count: number; oldest?: Observation; newest?: Observation }
 export interface Operations {
+  discover: { input: DiscoveryQuery; output: { hits: ({ observation: Observation; score: number | null; contentHash: string } | { dialogue: DialogueEvidence; score: number | null })[]; nextOffset: number | null; ranking: string } };
+  latestSource: { input: { slot: string }; output: Observation | undefined };
+  readScene: { input: Record<string, never>; output: { cursor: number; version: number; latest: Observation[]; changes: Observation[]; recent: Observation[] } };
+  acknowledgeScene: { input: { version: number }; output: null };
+  getDialogue: { input: { id: string }; output: DialogueEvidence | null };
+  hasDialogue: { input: { id: string }; output: boolean };
   readAttention: { input: Record<string, never>; output: AttentionState | null };
   writeAttention: { input: AttentionState; output: null };
   scheduledState: { input: Record<string, never>; output: CanonicalState[] };
@@ -38,6 +48,12 @@ export function validateQuery(q: ArchiveQuery, max = 100) {
   for (const at of [q.from,q.to]) if (at !== undefined && (typeof at !== 'number' || !Number.isFinite(at))) throw Error('Invalid archive timestamp');
   if (q.from !== undefined && q.to !== undefined && q.from > q.to) throw Error('Invalid archive timestamp range');
   return { ...q, limit };
+}
+export function validateDiscovery(input: DiscoveryQuery) {
+  const { offset = 0, source, modality, relatedId, ...query } = input;
+  if (!Number.isInteger(offset) || offset < 0 || offset > 10000) throw Error('Invalid search offset');
+  for (const filter of [source, modality, relatedId]) if (filter !== undefined) validateId(filter);
+  return { ...validateQuery(query, 50), offset, source, modality, relatedId };
 }
 export function validateId(id: string) { if (typeof id !== 'string' || !id.length || id.length > 256) throw Error('Invalid observation ID'); }
 export function validateObservation(o: Observation) {

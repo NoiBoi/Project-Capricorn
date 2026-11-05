@@ -1,6 +1,6 @@
 # Project Capricorn 2.0 — Architecture Guide
 
-Version 0.4 · November 4, 2026 · Living reference
+Version 0.5 · November 4, 2026 · Living reference
 
 This document condenses the supplied version 0.2 guide and records material implementation findings. The actual checkout and current official provider documentation take precedence. Update this guide when architecture changes, without rewriting other documentation.
 
@@ -28,12 +28,24 @@ Legacy remains the default. Runtime 2 requires CAPRI_RUNTIME=2 and an isolated C
 
 The 183-second diagnostic captured 13 requests, 368,816 input tokens, and ten silent completions. Offline replay of the same 13 request points reduced average full observations from 59 to 4.5 and repeated observations from 52 to 2.7. Using captured provider attribution, estimated average input fell from 28,371 to 4,489 tokens. A separate scheduling replay admitted six wakeups under restored daily-test defaults with silent-response backoff disabled. These are offline comparisons. Live behavior and billing after the correction remain unmeasured.
 
+## Layered cognitive workspace
+
+Layer 0 carries factual scene entries and their observation IDs, recent dialogue, active state, due reviews, body, attention and execution receipts. SQLite schema 5 stores the latest retained observation per source slot and the acknowledged sequence. Migration seeds historical slots and uses the existing journal high-water mark. On restart, retained entries remain last-known or stale until a live observation establishes current status. Screenshots retain their original capture time and historical provenance. A successful response acknowledges only the version assembled for that request. Recent changes are coalesced and bounded, with the original observations still available independently. Newly captured pixels can travel once on the visual fast path. A direct question can receive a fresh browser excerpt in its first request.
+
+The model can write or retire the 1,800-character `working-checkpoint` through revision-checked `write_memory`. Checkpoint text is explicitly an interpretation. Capri can pin up to six foundational records and cite observation or dialogue IDs. Routine assembly starts with 24 recent dialogue turns and the essential retrieval, memory, attention and movement tools. Direct, scheduled and investigative requests have wider histories and the full tool set. Large older tool payloads within a cycle can be replaced by recovery IDs after delivery.
+
+Layer 1 uses `search_observations` for compact discovery with source, modality, date and related-ID filters, including a saved-dialogue modality. The existing worker builds SQLite FTS5 indexes transactionally where supported, uses BM25 for lexical relevance and provides a bounded literal fallback. Archive deletes, expiry pruning and source revocation remove index entries. Equivalent same-source hits are deduplicated within each result page. Layer 2 supplies paged browser sections and dialogue excerpts. Layer 3 retrieves directly by ID or batches up to six evidence requests, with response and image bounds. Layer 4 uses the existing authorized inspection, browser, capture and attention capabilities through the receipt-producing executor.
+
+Attention combines a short settling period with a maximum wait for continuous changes. Direct input can interrupt ambient work. `set_attention` can watch an exact source identity within the existing monitoring window. Investigation deadlines survive restart and are limited to four scheduled reviews per record, with the existing six-request ceiling per cycle. An exploratory review advances review state. Reliable user-facing reminders with timezone, delivery acknowledgment, retries and local fallback remain future work.
+
+The opt-in recorder keeps exact inputs and adds mode, scene versions, evidence selection and omission IDs, checkpoint revisions and investigation steps. The report filter accepts investigation IDs. The redacted export continues to include only event identity and timing. Detailed local recordings are sensitive historical copies and should be handled independently of the live archive.
+
 ## Current topology and feedback loop
 
 1. WindowFocusSource emits changed foreground process/window metadata with timestamps, provenance, loss markers and stable IDs.
 2. WindowFocusArchive sends all SQLite operations to one worker. Original observation JSON and an observation reference in the logical journal are committed together before inference is notified.
 3. CognitiveLoop batches pending observation changes independently of collection. Equivalent changes do not wake the model, and silent ambient completions increase spacing. Direct messages bypass ambient pacing. One inference cycle owns a conversation at a time; arrivals during inference remain pending.
-4. The context manager assembles pinned identity from the canonical runtime section of DIALOGUE_GUIDE.md, recent dialogue, active canonical state, a bounded current observation view, a short change list with recovery IDs, and paired calls/results. The latest tab state replaces superseded snapshots in routine context. The archive retains originals independently.
+4. The context manager assembles pinned identity from the canonical runtime section of DIALOGUE_GUIDE.md, recent dialogue, active canonical state, a factual current scene, a short change list with recovery IDs, and paired calls/results. The latest tab state replaces superseded snapshots in routine context. The archive retains originals independently.
 5. SiwcProvider translates provider-independent records into Responses input. The model can speak, remain silent, or request historical evidence.
 6. The existing TypedCapabilityExecutor validates and executes archive and agent calls. Actual receipts/results are journaled under the model's call ID and returned to the model on the next request. Up to five rounds execute tools; an additional model response can finish the cycle. Further calls earn denied receipts. At most eight calls are accepted per response.
 7. Existing chat IPC, preload, panel and bubble receive streamed text and completed messages. Completed assistant dialogue and user messages survive restarts. Legacy Conversation remains blocked in Runtime 2.
@@ -46,7 +58,7 @@ The synthetic profile contains runtime2/experience.sqlite. Schema 1 stores origi
 
 Original observations retain the Phase 2 policy: 30 days / 50,000 records, by ingestion time. A retained conversation reference can outlive its original observation; missing evidence is explicit. Conversation records currently persist until the user clears chat; they are not semantic memories. The old 256-item snapshot remains an observation/debug working view, not the durable journal. Chat history queries select dialogue independently of observation volume.
 
-Default input budget: approximately 100,000 tokens, capped by the selected model's catalog-reported context_window minus 8,192 output headroom. The estimator uses UTF-8 byte counts plus overhead and is deliberately approximate. Identity and tool schemas stay pinned. Eviction removes oldest whole recoverable groups, preserving call/result pairing and durable records. No semantic summaries, vector index, or model-managed compaction are added.
+Default input budget: approximately 100,000 tokens, capped by the selected model's catalog-reported context_window minus 8,192 output headroom. The estimator uses UTF-8 byte counts plus overhead and is deliberately approximate. Identity and tool schemas stay pinned. Eviction removes oldest whole recoverable groups, preserving call/result pairing and durable records. Capri can maintain a bounded model-authored checkpoint through the same canonical state tool. Routine requests still carry recent dialogue and the pinned identity.
 
 If the account catalog omits a usable context capacity, inference stops rather than inventing one. The first live account catalog supplied gpt-6.1-sol with 500,000 context tokens. Other accounts/models must still supply their own verified catalog metadata; no entitlement is assumed.
 
@@ -85,12 +97,12 @@ The implemented cycle now connects perception, canonical state, attention and po
 
 ### Model-visible interfaces
 
-The four archive functions remain in `capri_archive`, preserving existing call history. Literal observation search now covers original payload text. Rich archive results are bounded excerpts; originals remain recoverable. Eight additional functions use the same validated execution/receipt/continuation path:
+The four archive functions remain in `capri_archive`. Routine requests expose ranked discovery and the direct/batched evidence tool alongside the core agent tools. Rich results are bounded excerpts; originals remain recoverable. Eight additional functions use the same validated execution/receipt/continuation path:
 
 - `inspect_window({handle?})`: current or known visible window metadata.
 - `get_browser_page({offset?,limit?})`: current authorized text and structure, paginated by section (maximum eight sections).
 - `capture_window({handle?})`: existing exposed target-window JPEG capture, provenance and retained original.
-- `retrieve_evidence({observationId,offset?,limit?})`: original extension payload sections or image attachment, with explicit missing/expired results.
+- `retrieve_evidence({observationId,offset?,limit?})`: original extension payload sections, dialogue excerpts or image attachments, with direct and batched access.
 - `find_memories({search?,kind?,status?,offset?,limit?})`: bounded literal canonical-state retrieval, checking disclosure permission on cited observations.
 - `write_memory({id,kind,text,provenance,evidence,status,dueAt,expectedRevision})`: create, correct, retire, complete or abandon semantic/episodic memories, user facts, interests, investigations or intentions. Revision checks prevent stale writes. Host/user provenance requires corresponding original records. Wording remains model-authored, never host certification. Limits: 1,000 records, 4,000 characters and 16 evidence IDs each.
 - `set_attention({afterMs,durationMs,inferenceIntervalMs,observationIntervalMs,source})`: next inference and temporary source pacing. Monitoring expires within 15 minutes; minimum host sampling is 500 milliseconds. The extension retains its own stricter extraction budget. Review deadlines persist in the archive. Pass `{action:"pause"}` or `{action:"cancel"}` to control optional ambient attention.

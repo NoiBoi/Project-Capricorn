@@ -5,6 +5,7 @@ const ReviewInput = z.object({
   inferenceIntervalMs: z.number().int().min(1000).max(3600000),
   observationIntervalMs: z.number().int().min(250).max(60000),
   source: z.enum(['all', 'screen', 'chrome']),
+  sourceIdentity: z.string().min(1).max(256).optional().describe('Wake for changes to this exact observed source identity during monitoring.'),
 }).strict();
 export const AttentionInput = ReviewInput.partial().extend({ action: z.enum(['cancel', 'pause']).optional() }).strict()
   .refine(input => input.action ? Object.keys(input).length === 1 : ReviewInput.safeParse(input).success,
@@ -65,7 +66,7 @@ export class AttentionController {
     return true;
   }
   complete(silent: boolean) { this.silent = silent ? Math.min(3, this.silent + 1) : 0; }
-  reason(pending: boolean, structural: boolean, due: boolean, sources: ReadonlySet<string> = new Set(), pendingSince = -Infinity): Trigger | undefined {
+  reason(pending: boolean, structural: boolean, due: boolean, sources: ReadonlySet<string> = new Set(), pendingSince = -Infinity, lastChange = pendingSince): Trigger | undefined {
     const now = this.now(), request = this.active();
     const elapsed = now - this.lastInference;
     this.history = this.history.filter(at => now - at < 3600000);
@@ -73,12 +74,15 @@ export class AttentionController {
     if (due) return 'commitment-due';
     if (this.nextReviewAt !== undefined && now >= this.nextReviewAt) return 'attention-review';
     if (this.paused || !pending || now - pendingSince < Math.min(3000, this.minInferenceMs / 2)) return;
-    const monitored = request && (request.source === 'all' || sources.has(request.source));
+    const monitored = request && (request.sourceIdentity ? sources.has(request.sourceIdentity) : request.source === 'all' || sources.has(request.source));
+    // Wait for a short lull, with a maximum delay for continuous activity.
+    if (!monitored && now - lastChange < Math.min(3000, this.minInferenceMs / 2) &&
+        now - pendingSince < Math.min(12000, this.minInferenceMs * 2)) return;
     if (monitored && elapsed >= request.inferenceIntervalMs) return 'monitored-change';
     const backoff = 2 ** this.silent;
     const structuralSpacing = Math.max(this.minInferenceMs, Math.min(this.baseMs, 30000) * Math.min(2, backoff));
     if (structural && elapsed >= structuralSpacing) return 'source-change';
-    if (this.nextReviewAt !== undefined || monitored) return;
+    if (monitored) return;
     if (elapsed >= this.baseMs * backoff) return 'batched-change';
   }
   ready(pending: boolean, structural: boolean, due: boolean) { return !!this.reason(pending, structural, due); }

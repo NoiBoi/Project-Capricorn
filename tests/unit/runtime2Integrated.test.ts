@@ -47,7 +47,7 @@ it('automatically captures a textless browser page and supplies original pixels 
   const observations=await archive.recent({limit:10});const visual=observations.find(o=>o.modality==='screenshot')!;
   expect(visual.related).toEqual([observations.find(o=>o.modality==='browser-page')!.id]);
   await loop.send('What is visible?');await idle(loop);
-  expect(inputs[0].images).toEqual([{observationId:visual.id,dataUrl:'data:image/jpeg;base64,'+Buffer.from('synthetic-JPEG-only-a-storage-fixture').toString('base64')}]);
+  expect(inputs[0].images).toEqual([{observationId:visual.id,capturedAt:visual.at,dataUrl:'data:image/jpeg;base64,'+Buffer.from('synthetic-JPEG-only-a-storage-fixture').toString('base64')}]);
   await loop.perception!.page({...page(),sections:[]},'extension');expect(host.capture).toHaveBeenCalledTimes(1);
   loop.perception!.clear();expect(await loop.perception!.currentImages('ambient',AbortSignal.timeout(1000))).toHaveLength(1);host.allowed=()=>false;expect(await loop.perception!.currentImages('ambient',AbortSignal.timeout(1000))).toEqual([]);
 });
@@ -278,6 +278,7 @@ it('distinguishes unpaired, paired-authorized, source-disallowed and controlled 
 
 it('keeps the latest tab state and original recovery IDs without replaying old full snapshots or pixels', async () => {
   const { archive, host } = await fixture();
+  host.windows = () => [{ handle: '42', pid: 7, process: 'chrome.exe', title: 'Synthetic reactor - Google Chrome' }];
   const inputs: ModelInput[] = [];
   const loop = new CognitiveLoop(archive, {
     models: async () => [model], shutdown() {},
@@ -296,7 +297,7 @@ it('keeps the latest tab state and original recovery IDs without replaying old f
   await loop.perception!.inspect(undefined, true, 'direct', AbortSignal.timeout(1000));
   await loop.send('Compare the page states.'); await idle(loop);
   expect(inputs[0].records.filter(r => r.kind === 'observation' && r.observation?.modality === 'browser-page')).toHaveLength(1);
-  expect(inputs[0].workingState).toMatchObject({ recentChanges: [expect.objectContaining({ id: original.id })] });
+  expect(inputs[0].workingState).toMatchObject({ recentChanges: expect.arrayContaining([expect.objectContaining({ id: original.id })]) });
   expect(inputs[0].images).toHaveLength(1);
   await loop.send('Continue the comparison.'); await idle(loop);
   expect(inputs[1].workingState).toMatchObject({ recentChanges: [] });
@@ -330,4 +331,73 @@ it('batches focus and media, backs off after silence, and reviews stable activit
   expect(attention.reason(false, false, true)).toBe('commitment-due');
   attention.adjust({ action: 'cancel' });
   expect(attention.reason(true, true, false)).toBe('source-change');
+});
+
+it('keeps unacknowledged scene versions across restart and does not acknowledge a racing write', async () => {
+  const { archive, host, create } = await fixture();
+  const perception = new Perception(archive, host, () => {});
+  await perception.page(page());
+  const first = await archive.readScene();
+  expect(first.version).toBeGreaterThan(first.cursor);
+  await perception.page({ ...page(), recordId: 'second', title: 'Second document' });
+  await archive.acknowledgeScene(first.version);
+  await archive.close();
+  const restored = await create();
+  const scene = await restored.readScene();
+  expect(scene.cursor).toBe(first.version);
+  expect(scene.changes).toMatchObject([{ content: { title: 'Second document' } }]);
+  expect(scene.latest).toHaveLength(2);
+});
+
+it('uses ranked compact discovery and batches known originals, then invalidates revoked results', async () => {
+  const { archive, host } = await fixture();
+  const inputs: ModelInput[] = [];
+  let originalId = '';
+  const provider: CognitiveProvider = { models: async () => [model], shutdown() {}, infer: async (_m, input) => {
+    inputs.push(input);
+    if (inputs.length === 1) return { text: '', calls: [
+      call('discover', 'search_observations', { search: 'sapphire coolant', modality: 'browser-page' }),
+      call('batch', 'retrieve_evidence', { items: [{ observationId: originalId }, { observationId: 'absent' }] }),
+    ] };
+    return { text: '', calls: [] };
+  } };
+  const loop = new CognitiveLoop(archive, provider, new TypedCapabilityExecutor(), { model: model.id, host, ambientMs: 60_000 });
+  cleanup.push(() => loop.shutdown());
+  await loop.initialize();
+  await loop.perception!.page(page());
+  originalId = loop.perception!.current('direct')[0].id;
+  await loop.send('Find the older reactor evidence.');
+  await idle(loop);
+  expect(inputs[1].records.find(r => r.kind === 'tool-result' && r.requestId === 'discover')).toMatchObject({
+    result: { ranking: 'bm25-lower-is-better', hits: [{ observation: { id: originalId } }] },
+  });
+  expect(inputs[1].records.find(r => r.kind === 'tool-result' && r.requestId === 'batch')).toMatchObject({
+    result: { results: [{ observationId: originalId, result: { original: { sections: [{ text: expect.stringContaining('sapphire') }] } } },
+      { observationId: 'absent', result: { status: 'missing' } }] },
+  });
+  expect((await archive.discover({ search: 'cerulean refrigerant' })).hits).toEqual([]);
+  await archive.appendConversation({ id: 'older-dialogue', at: Date.now() - 86400000, kind: 'assistant', text: 'The thermal exchanger was inspected.' });
+  expect((await archive.discover({ search: 'thermal exchanger', modality: 'dialogue' })).hits).toMatchObject([
+    { dialogue: { id: 'older-dialogue' } },
+  ]);
+  await archive.forgetSource('chrome');
+  expect((await archive.discover({ search: 'thermal exchanger', modality: 'dialogue' })).hits).toEqual([]);
+  expect((await archive.discover({ search: 'sapphire' })).hits).toEqual([]);
+  expect(await archive.get(originalId)).toBeUndefined();
+});
+
+it('persists checkpoint revisions and bounds durable investigation scheduling', async () => {
+  const { archive, create } = await fixture();
+  const input: StateWrite = { ...state('working-checkpoint'), kind: 'checkpoint', dueAt: null };
+  await archive.putState(input);
+  await archive.putState({ ...input, expectedRevision: 1, text: 'Corrected working hypothesis' });
+  await archive.close();
+  const restored = await create();
+  expect(await restored.findState({ kind: 'checkpoint' })).toMatchObject([{ text: 'Corrected working hypothesis', revision: 2 }]);
+  await expect(restored.putState({ ...input, expectedRevision: 1 })).rejects.toThrow('revision conflict');
+  const dueAt = Date.now() + 60_000;
+  for (let revision = 0; revision < 4; revision++) {
+    await restored.putState({ ...state(), dueAt: dueAt + revision, expectedRevision: revision });
+  }
+  await expect(restored.putState({ ...state(), dueAt: dueAt + 5, expectedRevision: 4 })).rejects.toThrow('budget exhausted');
 });

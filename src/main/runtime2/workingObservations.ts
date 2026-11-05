@@ -15,56 +15,19 @@ export function structuralChange(previous: Observation | undefined, observation:
 }
 
 export function observationHash(o: Observation) {
-  const { revision, changedSections, ...content } = o.content;
+  const { revision, changedSections, evidenceId, ...content } = o.content;
+  if (o.modality === 'screenshot') return evidenceId ?? o.id;
   return createHash('sha256').update(JSON.stringify(content)).digest('hex');
 }
 
-export function workingObservations(
-  journal: ConversationRecord[], live: Observation[], cursor: number, previous: ReadonlyMap<string, string>,
-) {
-  const candidates = new Map<string, ObservationRecord>();
-  for (const record of journal) {
-    if (record.kind === 'observation' && record.observation) candidates.set(record.observationId, record);
-  }
-  for (const o of live) {
-    const record = candidates.get(o.id);
-    candidates.set(o.id, record ? { ...record, observation: o } : { id: o.id, sequence: 0, at: o.at, kind: 'observation', observationId: o.id, observation: o });
-  }
-
-  const ordered = [...candidates.values()].sort((a, b) => b.at - a.at || b.sequence - a.sequence);
-  const liveIds = new Set(live.map(o => o.id));
-  const latest = new Map<string, ObservationRecord>();
-  const changes = [];
-  const changeHashes = new Set<string>();
-  for (const record of ordered) {
-    const o = record.observation!;
-    const slot = observationSlot(o);
-    // A saved browser snapshot does not establish that its tab is still visible.
-    const stateSlot = o.modality === 'browser-page' ? 'visible-browser' : slot;
-    if (!latest.has(stateSlot) && (liveIds.has(o.id) || o.modality !== 'browser-page' && !o.disclosure?.expiresAt)) {
-      latest.set(stateSlot, record);
-      continue;
-    }
-    if (record.sequence <= cursor || changes.length >= 8) continue;
-    const hash = observationHash(o);
-    const current = latest.get(stateSlot)?.observation;
-    if (current && observationSlot(current) === slot && observationHash(current) === hash) continue;
-    const key = slot + ':' + hash;
-    if (changeHashes.has(key)) continue;
-    changeHashes.add(key);
-    changes.push({ id: o.id, at: o.at, source: o.source, sourceIdentity: o.sourceIdentity, modality: o.modality, title: o.content.title.slice(0, 160) });
-  }
-
-  const priority = (r: ObservationRecord) => {
-    const o = r.observation!;
-    return o.source === 'desktop:foreground' || o.modality === 'browser-page' || o.modality === 'application-text' ? 0 : 1;
-  };
-  const chosen = [...latest.values()].sort((a, b) => priority(a) - priority(b)).slice(0, 6);
-  const hashes = new Map(chosen.map(r => [observationSlot(r.observation!), observationHash(r.observation!)]));
-  const repeatedIds = new Set(chosen.filter(r => hashes.get(observationSlot(r.observation!)) === previous.get(observationSlot(r.observation!))).map(r => r.id));
+export function sceneFact(o: Observation, current: boolean, now: number) {
+  const { title, process, handle, url, revision, playback } = o.content;
+  const staleAfter = o.disclosure?.expiresAt ?? o.at + 5 * 60_000;
   return {
-    chosen, changes: changes.reverse(), hashes, repeatedIds,
-    omitted: candidates.size - chosen.length - changes.length,
+    id: o.id, at: o.at, source: o.sourceIdentity ?? o.source, modality: o.modality,
+    title: title.slice(0, 160), process, handle, url: url?.slice(0, 500), revision, playback,
+    validity: current && o.modality !== 'screenshot' ? 'current' : now >= staleAfter ? 'stale' : 'last-known',
+    authority: o.provenance.authority,
   };
 }
 

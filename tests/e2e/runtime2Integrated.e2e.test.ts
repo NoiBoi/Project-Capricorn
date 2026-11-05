@@ -33,7 +33,7 @@ it('runs the integrated agent through Electron with fixture pixels, native movem
         const call = (id: string, name: string, args: unknown) => ({ id, name, arguments: JSON.stringify(args) });
         if (n === 1) return { text: '', calls: [call('browser','get_browser_page',{}),call('pixels','capture_window',{ handle: '777' })] };
         if (n === 2) {
-          const o = input.records.find((r: any) => r.kind === 'observation' && r.observation.modality === 'browser-page').observation;
+          const o = input.workingState.scene.facts.find((o: any) => o.modality === 'browser-page');
           return { text: '', calls: [call('save','write_memory',{ id: 'reactor', kind: 'investigation', text: 'Revisit the sapphire reactor coolant loops', provenance: 'host-observation', evidence: [o.id], status: 'active', dueAt: Date.now()+60000, expectedRevision: 0 }),call('attention','set_attention',{ afterMs: 60000, durationMs: 120000, inferenceIntervalMs: 60000, observationIntervalMs: 5000, source: 'screen' }),call('body','move',{ target: 'right' })] };
         }
         if (n === 4) return { text: '', calls: [call('perch','move',{ target: 'perch', handle: '777' })] };

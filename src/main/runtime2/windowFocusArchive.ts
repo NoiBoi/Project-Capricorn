@@ -87,6 +87,12 @@ export class WindowFocusArchive {
   async appendConversation(record: RecordInput) { this.ready(); return this.request('appendConversation', record); }
   async maintain() { this.ready(); try { return await this.request('maintain', {}); } catch (error) { this.recordFailure(error); throw error; } }
   async putState(input: StateWrite) { this.ready(); return this.request('putState', input); }
+  async discover(query: Operations['discover']['input']) { this.ready(); return this.request('discover', query); }
+  async latestSource(slot: string) { this.ready(); return this.request('latestSource', { slot }); }
+  async readScene() { this.ready(); return this.request('readScene', {}); }
+  async acknowledgeScene(version: number) { this.ready(); return this.request('acknowledgeScene', { version }); }
+  async getDialogue(id: string) { this.ready(); validateId(id); return this.request('getDialogue', { id }); }
+  async hasDialogue(id: string) { this.ready(); validateId(id); return this.request('hasDialogue', { id }); }
   async readAttention() { this.ready(); return this.request('readAttention', {}); }
   async writeAttention(input: Operations['writeAttention']['input']) { this.ready(); return this.request('writeAttention', input); }
   async scheduledState() { this.ready(); return this.request('scheduledState', {}); }

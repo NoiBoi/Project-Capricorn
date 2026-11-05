@@ -54,7 +54,7 @@ it('routes the existing chat UI through a mocked cognitive provider, real native
     });
     expect(before.legacyUnchanged).toBe(true);
     expect(before.inputs).toHaveLength(2);
-    expect(before.inputs[0].records.some((r: any) => r.kind === 'observation' && r.observation.provenance.collector === 'win32.foreground')).toBe(true);
+    expect(before.inputs[0].workingState.scene.facts.some((o: any) => o.modality === 'window-metadata' && o.authority === 'host')).toBe(true);
     expect(before.inputs[1].records.some((r: any) => r.kind === 'tool-result' && r.requestId === 'native-retrieval' && r.receipt.outcome === 'completed' && r.result.observations.length > 0)).toBe(true);
     await closeIsolatedApp(app); app = undefined;
     app = await electron.launch({ args: [path.resolve(__dirname, '../..')], env: { ...env, CAPRI_V2_WINDOW_FOCUS: '0' } });

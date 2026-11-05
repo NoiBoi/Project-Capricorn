@@ -4,12 +4,12 @@ import type { AssistantPhase, ChatMessage } from '../../shared/ipc';
 import type { WindowFocusArchive } from './windowFocusArchive';
 import type { CognitiveProvider, RecordInput } from './cognitiveContracts';
 import { approximateTokens, assembleContext, selectModel } from './context';
-import { AGENT_TOOLS, agentTool } from './agentTools';
+import { AGENT_TOOLS, ROUTINE_TOOLS, agentTool } from './agentTools';
 import { AttentionController } from './attention';
 import { Perception, type DesktopHost } from './perception';
 import type { CanonicalState } from './canonicalState';
 import type { DailySession } from './dailySession';
-import { excerptObservation, observationHash, observationSlot, workingObservations } from './workingObservations';
+import { excerptObservation, observationSlot, sceneFact } from './workingObservations';
 export interface LoopOptions { model?: string; contextBudget?: number; ambientMs?: number; timeoutMs?: number; host?: DesktopHost; daily?: DailySession; emit?: (channel: string, payload: unknown) => void }
 export class CognitiveLoop {
   private controller = new AbortController();
@@ -28,12 +28,9 @@ export class CognitiveLoop {
   private structural = false;
   private unavailableReviews = new Set<string>();
   private pendingSince = Infinity;
+  private lastChange = -Infinity;
   private pendingSources = new Set<string>();
-  private observationCursor = 0;
-  private previousObservations = new Map<string, string>();
-  private recentImageHashes = new Set<string>();
   private previousCompletion: 'silent' | 'dialogue' | 'tool-continuation' | 'failure' | null = null;
-  private investigationResults = new Map<string, { result: unknown; expiresAt: number }>();
   private closed = false;
   private paused = false;
   private phaseValue: AssistantPhase = 'idle';
@@ -42,7 +39,7 @@ export class CognitiveLoop {
   private lastWakeDecision = '';
   constructor(private archive: WindowFocusArchive, private provider: CognitiveProvider, private executor: TypedCapabilityExecutor, private options: LoopOptions = {}) {
     this.attention = new AttentionController(this.interval, Math.min(this.interval, 10000), Date.now, options.daily?.config.requestsPerHour ?? 120);
-    if (options.host) this.perception = new Perception(archive, options.host, (structural, source) => this.notifyObservation(structural, source), options.daily?.recorder);
+    if (options.host) this.perception = new Perception(archive, options.host, (structural, source, identity) => this.notifyObservation(structural, source, identity), options.daily?.recorder);
     for (const value of [options.contextBudget, options.ambientMs, options.timeoutMs]) if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) throw Error('Invalid cognitive loop resource limit.');
   }
   private async reconcile() {
@@ -59,7 +56,9 @@ export class CognitiveLoop {
     await this.refreshState();
     const savedAttention = await this.archive.readAttention();
     if (savedAttention) this.attention.restore(savedAttention);
-    this.options.daily?.recorder.event('state.restored', { conversationId: this.conversationId, canonical: this.canonical });
+    this.options.daily?.recorder.event('state.restored', { conversationId: this.conversationId, canonical: this.stateRevisions() });
+    const scene = await this.archive.readScene();
+    if (scene.changes.length) this.notifyObservation();
     this.timer = setInterval(() => { void this.tick(); }, Math.min(this.interval, 1000));
     this.timer.unref();
   }
@@ -74,29 +73,44 @@ export class CognitiveLoop {
       for (const id of state.evidence) {
         if (!evidence.has(id)) evidence.set(id, await this.archive.get(id));
         const observation = evidence.get(id);
-        if (observation && !this.options.host.allowed('disclose', observation, mode)) { allowed = false; break; }
+        if (observation ? (observation.disclosure?.retainUntil ?? Infinity) <= Date.now() || !this.options.host.allowed('disclose', observation, mode) : !await this.archive.hasDialogue(id)) { allowed = false; break; }
       }
       if (allowed) { result.push(state); this.unavailableReviews.delete(state.id); } else if (mode === 'ambient') this.unavailableReviews.add(state.id);
     }
     return result;
   }
+  private stateRevisions() {
+    return this.canonical.map(({ id, kind, status, revision, dueAt, scheduledReviews }) =>
+      ({ id, kind, status, revision, dueAt, scheduledReviews }));
+  }
   private permittedResult(value: unknown, mode: 'direct' | 'ambient', depth = 0): boolean {
     if (!this.options.host || !value || typeof value !== 'object') return true;
     if (depth > 20) return false;
-    if ('modality' in value && 'provenance' in value) return this.options.host.allowed('disclose', value as import('./contracts').Observation, mode);
+    if ('dialogue' in value && !this.options.host.allowed('conversation')) return false;
+    if ('modality' in value && 'provenance' in value) {
+      const observation = value as import('./contracts').Observation;
+      return (observation.disclosure?.retainUntil ?? Infinity) > Date.now() && this.options.host.allowed('disclose', observation, mode);
+    }
     return Object.values(value).every(item => this.permittedResult(item, mode, depth + 1));
   }
-  private workingState(allowed = this.canonical) {
-    const selected: CanonicalState[] = []; let bytes = 0;
-    for (const state of [...this.due().filter(s => allowed.some(a => a.id === s.id)), ...allowed]) { if (selected.some(s => s.id === state.id)) continue; const size = Buffer.byteLength(JSON.stringify(state)); if (bytes + size > 18000) continue; bytes += size; selected.push(state); }
-    return selected;
+  private workingState(allowed = this.canonical, maxBytes = 18000) {
+    const selected = new Map(allowed.filter(s => s.kind === 'checkpoint' || s.pinned).map(s => [s.id, s]));
+    let bytes = Buffer.byteLength(JSON.stringify([...selected.values()]));
+    for (const state of allowed) {
+      if (selected.has(state.id)) continue;
+      const size = Buffer.byteLength(JSON.stringify(state));
+      if (bytes + size > maxBytes) continue;
+      bytes += size;
+      selected.set(state.id, state);
+    }
+    return [...selected.values()];
   }
   private due() { if (this.options.host && !this.options.host.allowed('state')) return []; const now = Date.now(); return this.canonical.filter(s => !this.unavailableReviews.has(s.id) && s.dueAt !== null && s.dueAt <= now && (s.reviewedAt ?? -Infinity) < s.dueAt); }
   private ambientTrigger() {
     if (this.options.host && !this.options.host.allowed("disclose", undefined, "ambient")) return;
     if (this.options.daily && !this.options.daily.ambientReady()) return;
     this.attention.configure(this.options.daily?.ambientInterval ?? this.interval, this.options.daily?.config.requestsPerHour ?? 120);
-    return this.attention.reason(this.pendingAmbient, this.structural, this.due().length > 0, this.pendingSources, this.pendingSince);
+    return this.attention.reason(this.pendingAmbient, this.structural, this.due().length > 0, this.pendingSources, this.pendingSince, this.lastChange);
   }
   private tick() {
     if (this.closed || this.running) return;
@@ -116,13 +130,15 @@ export class CognitiveLoop {
   get host() { return this.options.host; }
   get state() { return { phase: this.phaseValue, busy: !!this.running, inferences: structuredClone(this.inferenceReceipts) }; }
   get id() { return this.conversationId; }
-  notifyObservation(structural = false, source = 'screen') {
+  notifyObservation(structural = false, source = 'screen', identity?: string) {
     if (this.closed) return;
     this.options.daily?.recorder.event('scheduler.observation', { source, structural, coalesced: this.pendingAmbient, running: !!this.running });
     if (!this.pendingAmbient) this.pendingSince = Date.now();
+    this.lastChange = Date.now();
     this.pendingAmbient = true;
     this.unavailableReviews.clear();
     this.pendingSources.add(source === 'chrome' ? 'chrome' : 'screen');
+    if (identity && this.pendingSources.size < 128) this.pendingSources.add(identity);
     this.structural ||= structural;
   }
   private consumeObservations() {
@@ -154,7 +170,7 @@ export class CognitiveLoop {
   resume() { if (!this.closed) { this.paused = false; this.pendingUser = true; this.kick(); } }
   environment(paused: boolean) { this.environmentPaused = paused; if (paused) { this.environmentAbort = true; this.current?.abort(); } }
   async quiesce() { this.stop(); await this.running; }
-  stop() { this.emit('runtime2:stopSpeech', {}); this.pendingUser = false; this.paused = true; this.consumeObservations(); this.investigationResults.clear(); this.current?.abort(); }
+  stop() { this.emit('runtime2:stopSpeech', {}); this.pendingUser = false; this.paused = true; this.consumeObservations(); this.current?.abort(); }
   private kick() {
     if (this.closed || this.running) return;
     this.running = this.drain().finally(() => {
@@ -175,15 +191,12 @@ export class CognitiveLoop {
       const signal = AbortSignal.any([this.controller.signal, this.current.signal, AbortSignal.timeout(this.options.timeoutMs ?? 180_000)]);
       this.phase('thinking');
       const cycleStarted = Date.now(), due = this.due().slice(0,10);
+      const investigationIds = due.filter(s => s.kind === 'investigation').map(s => s.id);
       const cycleId = randomUUID(), recorder = this.options.daily?.recorder;
       this.options.daily?.cycle(cycleId, ambient);
-      recorder?.event('cycle.start', { trigger, triggerSources, ambient, priorCompletion: this.previousCompletion, nextReviewAt, timeSinceLastInferenceMs: this.inferenceReceipts.length ? cycleStarted - this.inferenceReceipts.at(-1)!.at : null, attention: { requested: this.attention.snapshot(), baseIntervalMs: this.interval, hostAmbientMinimumMs: Math.min(this.interval, 10000) }, due, canonical: this.canonical, body: this.options.host?.body(), usage: this.options.daily?.status.usage }, { cycleId });
+      recorder?.event('cycle.start', { trigger, triggerSources, ambient, priorCompletion: this.previousCompletion, nextReviewAt, timeSinceLastInferenceMs: this.inferenceReceipts.length ? cycleStarted - this.inferenceReceipts.at(-1)!.at : null, attention: { requested: this.attention.snapshot(), baseIntervalMs: this.interval, hostAmbientMinimumMs: Math.min(this.interval, 10000) }, due: due.map(s => ({ id: s.id, dueAt: s.dueAt })), canonical: this.stateRevisions(), body: this.options.host?.body(), usage: this.options.daily?.status.usage }, { cycleId });
       const suppliedReviews = new Set<string>();
-      const actualResults = new Map<string, unknown>();
-      for (const [id, value] of this.investigationResults) {
-        if (value.expiresAt > Date.now()) actualResults.set(id, value.result);
-        else this.investigationResults.delete(id);
-      }
+      const actualResults = new Map<string, { result: unknown; round: number; evidence: string[] }>();
       const images: { observationId: string; dataUrl: string }[] = [];
       const failedCaptures = new Set<string>();
       let partial = ''; let responseId = randomUUID();
@@ -196,49 +209,83 @@ export class CognitiveLoop {
         // Removing tools on the final request works without provider-specific controls.
         for (let round = 0; round < 6; round++) {
           this.consumeObservations();
-          const [page, dialogue, journal] = await Promise.all([
-            this.archive.conversation(160, false, 'exclude'), this.archive.conversation(80, true), this.archive.conversation(96, false, 'only'),
+          const cognitiveMode = !ambient ? 'direct' : round > 0 ? 'investigation' : due.length || trigger === 'attention-review' ? 'scheduled' : 'routine';
+          const [page, dialogue, scene] = await Promise.all([
+            this.archive.conversation(round > 0 ? 160 : 32, false, 'exclude'),
+            this.archive.conversation(cognitiveMode === 'routine' ? 24 : 60, true),
+            this.archive.readScene(),
           ]);
           signal.throwIfAborted();
           page.records = [...new Map([...dialogue.records, ...page.records].map(record => [record.id, record])).values()].sort((a, b) => a.sequence - b.sequence);
           const mode = ambient ? 'ambient' : 'direct';
           if (this.options.host && !this.options.host.allowed('disclose', undefined, mode)) throw Error('Cloud disclosure is currently paused');
-          const permitted = journal.records.filter(r => r.kind === 'observation' && r.observation &&
-            (!this.options.host || this.options.host.allowed('disclose', r.observation, mode)));
-          const working = workingObservations(permitted, this.perception?.current(mode) ?? [], this.observationCursor, this.previousObservations);
+          const live = this.perception?.current(mode) ?? [];
+          const liveSlots = new Map(live.map(o => [observationSlot(o), o]));
+          const bySlot = new Map(scene.latest.map(o => [observationSlot(o), o]));
+          for (const o of live) bySlot.set(observationSlot(o), o);
+          const permitted = (o: import('./contracts').Observation) =>
+            (o.disclosure?.retainUntil ?? Infinity) > Date.now() && (!this.options.host || this.options.host.allowed('disclose', o, mode));
+          const now = Date.now(), active = this.options.host?.active();
+          const isCurrent = (o: import('./contracts').Observation) =>
+            liveSlots.get(observationSlot(o))?.id === o.id && o.content.handle === active;
+          const sceneFacts = [...bySlot.values()].filter(permitted)
+            .sort((a,b) => Number(isCurrent(b)) - Number(isCurrent(a)) || b.at - a.at)
+            .slice(0, cognitiveMode === 'routine' ? 6 : 12).map(o => sceneFact(o, isCurrent(o), now));
+          const changes = [...new Map([...scene.changes, ...scene.recent].filter(permitted).map(o => [o.id, o])).values()];
+          const changedIds = new Set(changes.map(o => o.id));
+          const facts = sceneFacts.map(fact => changedIds.has(fact.id) ? { ...fact, changed: true } : fact);
+          const describedIds = new Set(facts.map(o => o.id));
+          const otherChanges = changes.filter(o => !describedIds.has(o.id));
+          const recentChanges = otherChanges.slice(0, 8).map(o => sceneFact(o, isCurrent(o), now));
+          const omittedChanges = otherChanges.slice(recentChanges.length).map(o => o.id);
           if (round === 0 && model.supportsImages && this.perception) {
-            const candidates = working.chosen.flatMap(r => r.observation && !this.recentImageHashes.has(r.observation.content.evidenceId ?? r.observationId) ? [r.observation] : []);
-            images.push(...await this.perception.currentImages(mode, signal, candidates));
+            images.push(...await this.perception.currentImages(mode, signal, changes));
           }
-          const recentCalls = new Set(page.records.filter(r => r.kind === 'tool-call').slice(-8).map(r => r.requestId));
-          const history = page.records.filter(r => (r.kind !== 'tool-call' && r.kind !== 'tool-result') ||
-            recentCalls.has(r.requestId) || actualResults.has(r.requestId));
-          const presented = [...history.map(original => {
-            const r = original.kind === 'tool-result' && actualResults.has(original.requestId) ? { ...original, result: actualResults.get(original.requestId) } : original;
-            if (r.kind === 'tool-result' && !this.permittedResult(r.result, mode)) return { ...r, result: { withheld: 'Evidence disclosure is currently denied.' }, receipt: { ...r.receipt, outcome: 'denied' as const } };
-            return r;
-          }), ...working.chosen.map(excerptObservation).reverse()];
+          // Direct questions get a one-request fast path to newly changed visible text.
+          const immediate = !ambient && round === 0 ? live.filter(o => o.modality === 'browser-page' && isCurrent(o) &&
+            changes.some(change => change.id === o.id)).slice(0, 1) : [];
+          const history = page.records.filter(r => r.kind === 'tool-call' || r.kind === 'tool-result'
+            ? actualResults.has(r.requestId)
+            : cognitiveMode !== 'routine' || dialogue.records.some(d => d.id === r.id));
+          const presented = history.map(original => {
+            if (original.kind !== 'tool-result') return original;
+            const entry = actualResults.get(original.requestId);
+            const result = entry?.result;
+            if (!this.permittedResult(result, mode)) return { ...original, result: { withheld: 'Evidence disclosure is currently denied.' }, receipt: { ...original.receipt, outcome: 'denied' as const } };
+            // The first continuation receives the complete result. Older large payloads
+            // remain recoverable by ID when the investigation moves to later rounds.
+            if (entry && entry.round + 2 < round && entry.evidence.length && approximateTokens(result) > 12000) {
+              return { ...original, result: { earlierEvidenceIds: entry.evidence, detail: 'Previously supplied; retrieve again for full details.' } };
+            }
+            return { ...original, result };
+          });
+          for (const o of immediate) presented.push(excerptObservation({
+            id: o.id, kind: 'observation', observationId: o.id, sequence: 0, at: o.at, observation: o,
+          }));
           const allowedState = await this.permittedState(mode); signal.throwIfAborted();
           const suppliedDue = due.filter(s => allowedState.some(a => a.id === s.id));
           for (const state of suppliedDue) suppliedReviews.add(state.id);
-          const input = assembleContext(presented, model, round === 5 ? [] : AGENT_TOOLS, this.options.contextBudget, 8192 + images.length * 8192, {
+          const tools = round === 5 ? [] : cognitiveMode === 'routine' ? ROUTINE_TOOLS : AGENT_TOOLS;
+          const input = assembleContext(presented, model, tools, this.options.contextBudget, 8192 + images.length * 8192, {
             toolBudget: { remainingExecutableRounds: Math.max(0, 5 - round), remainingRequests: 6 - round, mode,
               instruction: round === 5 ? 'No tool executions remain. Answer the direct user question from actual outcomes when possible; disclose unresolved work. Ambient silence remains valid. Never claim a denied action succeeded.' : 'Use remaining tool rounds to retrieve evidence and complete justified state updates before the finishing response.' },
-            recentChanges: working.changes,
+            cognitiveMode,
+            scene: { version: scene.version, facts },
+            recentChanges, omittedChangeEvidenceIds: omittedChanges,
+            previousExecutionReceipts: page.records.flatMap(r => r.kind === 'tool-result' && !actualResults.has(r.requestId)
+              ? [{ capability: r.receipt.capability, at: r.at, outcome: r.receipt.outcome }] : []).slice(-8),
             foregroundHandle: this.options.host?.active() ?? null,
-            observationScope: "Observations are timestamped evidence. An earlier snapshot may no longer describe a visible window. Recent changes are references to original records.",
             browser: this.options.host?.browserStatus?.() ?? { status: 'unavailable' },
             sessionLimits: this.options.daily ? { config: this.options.daily.config, usage: this.options.daily.status.usage, policy: 'Host enforces these ceilings for every HTTP attempt, including continuations. Token ceiling stops subsequent admissions after reported usage reaches it; exact remaining account quota is unknown.' } : null,
-            now: Date.now(), body: this.options.host?.body() ?? null, attention: this.attention.snapshot(), activeState: this.workingState(allowedState), dueReviews: suppliedDue.map(s => ({ id: s.id, text: s.text.slice(0,1000), dueAt: s.dueAt, revision: s.revision })),
-            evidenceRecovery: 'Original older chronology is retained in the archive. Retrieve by ID or literal search; omitted context is not a semantic summary.',
+            now: Date.now(), body: this.options.host?.body() ?? null, attention: this.attention.snapshot(), activeState: this.workingState(allowedState, cognitiveMode === 'routine' ? 6000 : 18000), dueReviews: suppliedDue.map(s => ({ id: s.id, text: s.text.slice(0,1000), dueAt: s.dueAt, revision: s.revision })),
+            evidenceRecovery: 'Search or fetch known IDs. Promote useful discoveries to working-checkpoint or canonical memory when warranted.',
           });
-          const imageHashes: string[] = [];
           if (images.length) {
             input.images = images.splice(0,2);
             for (const image of input.images) {
               const observation = await this.archive.get(image.observationId);
               if (!observation || this.options.host && !this.options.host.allowed('disclose', observation, mode)) throw Error('Image permission or evidence reference unavailable');
-              imageHashes.push(observation.content.evidenceId ?? image.observationId);
+              image.capturedAt = observation.at;
             }
           }
           partial = ''; responseId = randomUUID();
@@ -246,27 +293,14 @@ export class CognitiveLoop {
           if (recorder?.status.active) {
             const available = (await this.archive.stats()).count;
             signal.throwIfAborted();
-            const observations = input.records.filter(r => r.kind === 'observation');
-            const ids = new Set(input.records.map(r => r.id));
-            const repeated = observations.filter(r => working.repeatedIds.has(r.id)).length;
-            const times = [...observations.map(r => r.at), ...working.changes.map(r => r.at)];
-            recorder.event('context.metrics', {
-              estimatedBytesByCategory: {
-                identity: approximateTokens(input.identity), tools: approximateTokens(input.tools),
-                dialogue: approximateTokens(input.records.filter(r => r.kind === 'user' || r.kind === 'assistant')),
-                toolHistory: approximateTokens(input.records.filter(r => r.kind === 'tool-call' || r.kind === 'tool-result')),
-                observations: approximateTokens(observations), workingState: approximateTokens(input.workingState),
-                attachedImagePayload: input.images?.reduce((sum, image) => sum + image.dataUrl.length, 0) ?? 0,
-              },
-              newObservations: observations.length - repeated + working.changes.length,
-              repeatedObservations: repeated,
-              observationKeys: working.chosen.filter(r => ids.has(r.id)).map(r => ({
-                id: r.observationId, hash: observationHash(r.observation!),
-                repeated: working.repeatedIds.has(r.id),
-              })),
-              observationRange: times.length ? [Math.min(...times), Math.max(...times)] : null,
-              omittedRecords: working.omitted + page.records.length - history.length + presented.filter(r => !ids.has(r.id)).length,
-              originalRecordsAvailable: available,
+            recorder.event('context.selection', {
+              cognitiveMode, trigger, sceneVersion: scene.version, previousSceneVersion: scene.cursor,
+              sceneEvidenceIds: facts.map(o => o.id), changedEvidenceIds: [...facts.filter(o => changedIds.has(o.id)).map(o => o.id), ...recentChanges.map(o => o.id)],
+              omittedChangeIds: omittedChanges,
+              availableObservations: available,
+              checkpoints: allowedState.filter(s => s.kind === 'checkpoint' || s.kind === 'investigation').map(s => ({ id: s.id, revision: s.revision })),
+              categoryEstimates: { dialogueAndTools: approximateTokens(input.records), workingState: approximateTokens(input.workingState),
+                identity: approximateTokens(input.identity), toolSchemas: approximateTokens(input.tools) },
             }, { cycleId, requestId: networkId });
           }
           recorder?.request(networkId, 'assembled', { model, input, contextBudget: this.options.contextBudget, round, omittedRecordIds: presented.filter(r => !input.records.some(i => i.id === r.id)).map(r => r.id) }, cycleId);
@@ -279,11 +313,9 @@ export class CognitiveLoop {
           this.previousCompletion = result.calls.length ? 'tool-continuation' : result.text ? 'dialogue' : 'silent';
           if (!result.calls.length && ambient) this.attention.complete(this.previousCompletion === 'silent');
           else if (result.text || result.calls.length) this.attention.complete(false);
-          this.observationCursor = Math.max(this.observationCursor, ...journal.records.map(r => r.sequence));
-          this.previousObservations = new Map([...working.hashes].filter(([slot]) => input.records.some(r => r.kind === "observation" && r.observation && observationSlot(r.observation) === slot)));
-          for (const hash of imageHashes) this.recentImageHashes.add(hash);
-          while (this.recentImageHashes.size > 128) this.recentImageHashes.delete(this.recentImageHashes.values().next().value!);
-          recorder?.event('provider.result', { ...result, latencyMs: Date.now() - requestStarted, outcome: this.previousCompletion, model }, { cycleId, requestId: networkId });
+          signal.throwIfAborted();
+          if (scene.version > scene.cursor) await this.archive.acknowledgeScene(scene.version);
+          recorder?.event('provider.result', { ...result, round, cognitiveMode, investigationIds, latencyMs: Date.now() - requestStarted, outcome: this.previousCompletion, model }, { cycleId, requestId: networkId });
           this.inferenceReceipts.push({ at: Date.now(), model: model.id, requestId: result.requestId, usage: result.usage });
           if (this.inferenceReceipts.length > 32) this.inferenceReceipts.shift();
           signal.throwIfAborted();
@@ -321,10 +353,11 @@ export class CognitiveLoop {
           for (const call of result.calls) {
             signal.throwIfAborted();
             const toolStarted = Date.now();
-            recorder?.event('tool.start', { ...call, round, body: this.options.host?.body(), canonical: this.canonical }, { cycleId, requestId: networkId });
-            if (round === 5) {
-              recorder?.event('tool.denied', { ...call, reason: 'tool-budget-exhaustion', persisted: false }, { cycleId, requestId: networkId });
-              await this.save({ id: randomUUID(), at: Date.now(), kind: 'tool-result', requestId: call.id, receipt: { id: call.id, at: Date.now(), capability: call.name, outcome: 'denied', detail: 'Tool round limit reached; not executed.', dependencies: ['runtime2:archive'] } });
+            recorder?.event('tool.start', { ...call, round, body: this.options.host?.body(), canonical: this.stateRevisions() }, { cycleId, requestId: networkId });
+            if (round === 5 || (AGENT_TOOLS.some(tool => tool.name === call.name) && !tools.some(tool => tool.name === call.name))) {
+              actualResults.set(call.id, { result: undefined, round, evidence: [] });
+              recorder?.event('tool.denied', { ...call, reason: round === 5 ? 'tool-budget-exhaustion' : 'tool-not-offered', persisted: true }, { cycleId, requestId: networkId });
+              await this.save({ id: randomUUID(), at: Date.now(), kind: 'tool-result', requestId: call.id, receipt: { id: call.id, at: Date.now(), capability: call.name, outcome: 'denied', detail: 'Tool is unavailable for this request.', dependencies: ['runtime2:archive'] } });
               continue;
             }
             const definition = agentTool(this.archive, { perception: this.perception, attention: this.attention, failedCaptures, refreshState: () => this.refreshState(), mode: ambient ? 'ambient' : 'direct', model, attach: (observationId, dataUrl) => { if (images.length >= 2) return false; images.push({ observationId, dataUrl }); return true; } }, call.name);
@@ -333,20 +366,23 @@ export class CognitiveLoop {
               dependencies: ['runtime2:archive'], deadline: Date.now() + 10_000, persist: false }, call.arguments, {
                 ...definition, parse: value => { if (typeof value !== 'string' || value.length > 32768) throw Error('Invalid tool arguments'); try { return definition.parse(JSON.parse(value)); } catch { throw Error('Invalid archive tool arguments.'); } },
               }, signal);
-            recorder?.event('tool.end', { ...call, execution, durationMs: Date.now() - toolStarted, body: this.options.host?.body(), canonical: this.canonical, attention: this.attention.snapshot() }, { cycleId, requestId: networkId });
+            recorder?.event('tool.end', { ...call, execution, durationMs: Date.now() - toolStarted, body: this.options.host?.body(), canonical: this.stateRevisions(), attention: this.attention.snapshot() }, { cycleId, requestId: networkId });
             signal.throwIfAborted();
-            actualResults.set(call.id, execution.result);
             const references: { observationId: string; modality: string; originalId?: string }[] = [];
             const collect = (value: unknown, depth = 0) => {
               if (!value || typeof value !== 'object' || depth > 20) return;
-              if ('modality' in value && 'id' in value && value.modality !== 'window-metadata') { const o = value as import('./contracts').Observation; references.push({ observationId: o.id, modality: o.modality, ...(o.original ? { originalId: o.original.id } : {}) }); return; }
+              if ('dialogue' in value && value.dialogue && typeof value.dialogue === 'object' && 'id' in value.dialogue) {
+                references.push({ observationId: String(value.dialogue.id), modality: 'dialogue' }); return;
+              }
+              if ('modality' in value && 'id' in value && 'provenance' in value) { const o = value as import('./contracts').Observation; references.push({ observationId: o.id, modality: o.modality, ...(o.original ? { originalId: o.original.id } : {}) }); return; }
               for (const item of Object.values(value)) collect(item, depth + 1);
             };
             collect(execution.result);
-            if (references.length && approximateTokens(execution.result) <= 32_000) {
-              this.investigationResults.set(call.id, { result: execution.result, expiresAt: Date.now() + 15 * 60000 });
-              while (this.investigationResults.size > 6) this.investigationResults.delete(this.investigationResults.keys().next().value!);
-            }
+            actualResults.set(call.id, { result: execution.result, round, evidence: references.map(r => r.observationId) });
+            if (references.length || call.name === 'search_observations' || call.name === 'write_memory') recorder?.event('investigation.step', {
+              tool: call.name, outcome: execution.receipt.outcome, investigationIds, references,
+              ...(call.name === 'write_memory' ? { revision: execution.result } : {}),
+            }, { cycleId, requestId: networkId });
             await this.save({ id: randomUUID(), at: Date.now(), kind: 'tool-result', requestId: call.id, ...execution,
               ...(references.length ? { result: { evidenceReferences: references, detail: 'Original results were supplied during execution. Recover original content with retrieve_evidence; duplicate rich content is not retained in the journal.' } } : {}) });
           }
@@ -354,7 +390,7 @@ export class CognitiveLoop {
           if (ambient && this.pendingUser) break;
         }
         await this.archive.reviewState([...suppliedReviews], cycleStarted); await this.refreshState();
-        recorder?.event('cycle.end', { durationMs: Date.now() - cycleStarted, suppliedReviews: [...suppliedReviews], canonical: this.canonical, attention: this.attention.snapshot() }, { cycleId });
+        recorder?.event('cycle.end', { durationMs: Date.now() - cycleStarted, suppliedReviews: [...suppliedReviews], canonical: this.stateRevisions(), attention: this.attention.snapshot() }, { cycleId });
         this.phase('idle');
       } catch (error) {
         const failure = error as { code?: string; status?: number };
@@ -362,6 +398,7 @@ export class CognitiveLoop {
         recorder?.event('provider.error', { outcome, code: failure?.code, status: failure?.status, detail: safeFailure(error), durationMs: Date.now() - cycleStarted }, { cycleId });
         if (!this.closed && partial) this.emit('chat:done', { message: { id: responseId, role: 'assistant', content: partial, ts: Date.now(), meta: { provider: 'siwc', interrupted: true } } });
         if (!this.closed) {
+          this.notifyObservation();
           this.previousCompletion = 'failure';
           this.paused = !this.pendingUser && !this.environmentAbort;
           this.phase(signal.aborted ? 'idle' : 'error', signal.aborted ? 'Response cancelled or timed out. Saved conversation is preserved.' : safeFailure(error));

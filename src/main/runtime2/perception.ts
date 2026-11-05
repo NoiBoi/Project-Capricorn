@@ -25,7 +25,7 @@ export class Perception {
   private signatures = new Map<string, string>();
   private visualAbort = new AbortController();
   private visualAttempts = new Map<string, number>();
-  constructor(private archive: WindowFocusArchive, readonly host: DesktopHost, private changed: (structural: boolean, source: string) => void, private recorder?: SessionRecorder) {}
+  constructor(private archive: WindowFocusArchive, readonly host: DesktopHost, private changed: (structural: boolean, source: string, identity?: string) => void, private recorder?: SessionRecorder) {}
   async observe(observation: Observation) { return this.retain(observation); }
   private async retain(observation: Observation, notify = true) {
     if (!this.host.allowed('collect', observation)) throw Error('Collection denied');
@@ -39,7 +39,7 @@ export class Perception {
       const result = await this.archive.write(observation);
       this.recorder?.event('observation', { observation, retention: result });
     }
-    if (notify && changed) this.changed(structuralChange(previous, observation), observation.source);
+    if (notify && changed) this.changed(structuralChange(previous, observation), observation.source, observation.sourceIdentity);
     return observation;
   }
   browserForWindow(title: string) { return [...this.recent.values()].find(o => o.modality === 'browser-page' && (o.disclosure?.expiresAt ?? 0) > Date.now() && o.content.title === title.replace(/ - (?:Google Chrome|Chrome)$/i, '')); }
@@ -78,15 +78,29 @@ export class Perception {
     const generation = ++this.pageGeneration;
     if (page.operation === 'delete') { this.recorder?.event('source.delete', { source: 'chrome' }); this.clear(); return; }
     const key = 'chrome:' + createHash('sha256').update(page.recordId).digest('hex').slice(0,24);
-    const old = this.recent.get('browser-page:' + key);
+    const slot = 'browser-page:' + key;
+    const live = this.recent.get(slot);
+    const old = live ?? await this.archive.latestSource(slot);
+    if (generation !== this.pageGeneration) return;
     for (const [id, other] of this.recent) if (id !== 'browser-page:' + key && other.modality === 'browser-page') this.recent.delete(id);
     const playback = page.playback && { state: page.playback.state, duration: page.playback.duration };
-    if (page.mode === 'metadata' && old?.content.url === page.url && old.content.title === page.title && JSON.stringify(old.content.playback) === JSON.stringify(playback)) { old.disclosure!.expiresAt = Date.now() + 90000; return; }
+    if (page.mode === 'metadata' && live && old?.content.url === page.url && old.content.title === page.title && JSON.stringify(old.content.playback) === JSON.stringify(playback)) { old.disclosure!.expiresAt = Date.now() + 90000; return; }
     const content = { handle: this.host.windows().find(w => w.handle === this.host.active() && /chrome/i.test(w.process))?.handle ?? null, process: 'chrome.exe', title: page.title, url: page.url, revision: page.revision,
       ...(playback ? { playback } : {}),
       text: page.mode === 'selection' ? page.selection : page.mode === 'excerpt' ? page.excerpt : '', sections: page.sections };
     const signature = createHash('sha256').update(JSON.stringify({ ...content, revision: 0, handle: null })).digest('hex');
-    if (old && this.signatures.get(key) === signature) { this.recorder?.event('observation.deduplicated', { source: 'chrome', observationId: old.id }); if (old.disclosure) old.disclosure.expiresAt = Date.now() + 90000; await this.visualFallback(old, generation); return; }
+    if (old && (old.disclosure?.retainUntil ?? Infinity) > Date.now()) {
+      const { changedSections: _changed, ...oldContent } = old.content;
+      const oldSignature = createHash('sha256').update(JSON.stringify({ ...oldContent, revision: 0, handle: null })).digest('hex');
+      if (oldSignature === signature && this.host.allowed('collect', old)) {
+        const refreshed = { ...old, content: { ...old.content, handle: content.handle },
+          ...(old.disclosure ? { disclosure: { ...old.disclosure, expiresAt: Date.now() + 90000 } } : {}) };
+        this.recent.set(slot, refreshed);
+        this.recorder?.event('observation.deduplicated', { source: 'chrome', observationId: old.id });
+        await this.visualFallback(refreshed, generation);
+        return;
+      }
+    }
     const observation: Observation = { id: randomUUID(), at: page.occurredAt, source: 'chrome', sourceIdentity: key, modality: 'browser-page', content,
       disclosure: { source: 'chrome', url: page.url, retain: false, expiresAt: Date.now() + 90000 },
       provenance: { authority: 'host', collector: intake === 'extension' ? 'chrome.extension' : 'controlled-test', metadata: { mode: page.mode, pageRecordId: page.recordId, revision: String(page.revision), evidence: intake === 'extension' ? 'authorized-extension-payload' : 'controlled-test-intake' } },
@@ -100,7 +114,6 @@ export class Perception {
     if (old?.content.url === page.url && old.content.sections) observation.content.changedSections = page.sections.flatMap((section, i) => JSON.stringify(section) !== JSON.stringify(old.content.sections?.[i]) ? [i] : []);
     await this.retain(observation);
     if (observation.disclosure!.retain) this.recorder?.event('observation.original', { observationId: observation.id, page });
-    this.signatures.set(key, signature);
     await this.visualFallback(observation, generation);
   }
   async inspect(handle: string | undefined, screenshot: boolean, mode: DisclosureMode, signal: AbortSignal, related: string[] = [], notify = false) {
