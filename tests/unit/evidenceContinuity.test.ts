@@ -7,7 +7,7 @@ import { WindowFocusArchive } from '../../src/main/runtime2/windowFocusArchive';
 import { CognitiveLoop, type LoopOptions } from '../../src/main/runtime2/cognitiveLoop';
 import { TypedCapabilityExecutor } from '../../src/core/capabilities';
 import { DailySession, requestTextMeasure } from '../../src/main/runtime2/dailySession';
-import { approximateTokens, encodeInput, encodeTools } from '../../src/main/runtime2/context';
+import { ambientDialogue, approximateTokens, encodeInput, encodeTools } from '../../src/main/runtime2/context';
 import { selectAmbientDialogue } from '../../src/main/runtime2/dialogueSelection';
 import { selectSemanticEvidence } from '../../src/main/runtime2/evidenceSelection';
 import type { CognitiveProvider, ModelInput } from '../../src/main/runtime2/cognitiveContracts';
@@ -163,6 +163,47 @@ it.each(['completed','abandoned','retired'] as const)('keeps %s investigations a
     expect((input.workingState as any).completedTasks).toMatchObject([{id:'old',status}]);
     expect((input.workingState as any).activeState.some((s:any)=>s.id==='old')).toBe(false);
   }
+});
+it.each(['completed','abandoned','retired'] as const)('preserves later user resolution evidence for a %s task in actual ambient and deep inputs',async status=>{
+  let n=0;const f=await fixture(async()=>++n===1?{text:'',calls:[investigate()]}:{text:'',calls:[]});
+  const now=Date.now();
+  await f.archive.appendConversation({id:'old-directive',at:now-4000,kind:'user',text:'Follow only the calibration log until the test ends.'});
+  await f.archive.appendConversation({id:'old-ack',at:now-3999,kind:'assistant',text:'I will track that log.'});
+  await f.archive.putState({...state('calibration','investigation'),text:'Calibration test is running.'} as any);
+  const task=(await f.archive.findState({kind:'investigation'}))[0];
+  await f.archive.appendConversation({id:'resolution',at:task.createdAt+1,kind:'user',text:'The calibration test is over. Cancel that watch and resume normal attention.'});
+  await f.archive.appendConversation({id:'resolution-ack',at:task.createdAt+2,kind:'assistant',text:'Watch canceled. Normal attention resumed.'});
+  await f.archive.appendConversation({id:'opinion',at:task.createdAt+3,kind:'assistant',text:'Cobalt valves make me suspicious.'});
+  // Match the live failure: completion cites cancellation, not the old directive.
+  await f.archive.putState({...state('calibration','investigation',['resolution']),status,text:'The calibration test ended.',expectedRevision:task.revision} as any);
+  await f.loop.perception!.observe(page('A'));await f.wake();
+  expect(f.inputs).toHaveLength(2);
+  for(const input of f.inputs) {
+    const wire=JSON.stringify(encodeInput(input));
+    expect(wire).toContain('The calibration test is over. Cancel that watch');
+    expect(wire).toContain('Cobalt valves make me suspicious.');
+    expect((input.workingState as any).completedTasks).toContainEqual(expect.objectContaining({id:'calibration',status}));
+    expect((input.workingState as any).activeState.some((s:any)=>s.id==='calibration')).toBe(false);
+    expect(input.records.filter(r=>r.id==='resolution')).toHaveLength(1);
+  }
+  expect((await f.archive.conversation(100,true)).records.some(r=>r.id==='old-directive')).toBe(true);
+  f.host.allowed=op=>op!=='conversation';await f.wake();
+  expect(f.inputs.at(-1)!.records.some(r=>r.kind==='user'||r.kind==='assistant')).toBe(false);
+});
+it('recovers a task resolution beyond recent dialogue and keeps the latest superseding exchange ahead of older lexical hits',async()=>{
+  const f=await fixture(async()=>({text:'',calls:[]}));const now=Date.now();
+  await f.archive.putState({...state('old-task','investigation'),text:'Track the old subject.'} as any);
+  const task=(await f.archive.findState({kind:'investigation'}))[0];
+  await f.archive.appendConversation({id:'cancel',at:task.createdAt+1,kind:'user',text:'Cancel the old task.'});
+  await f.archive.appendConversation({id:'cancel-ack',at:task.createdAt+2,kind:'assistant',text:'Canceled.'});
+  await f.archive.putState({...state('old-task','investigation',['cancel']),status:'completed',expectedRevision:task.revision} as any);
+  for(let n=0;n<30;n++)await f.archive.appendConversation({id:'passing-'+n,at:now+3+n,kind:'assistant',text:'A separate passing observation '+n});
+  await f.loop.perception!.observe(page('A'));await f.wake();
+  expect(JSON.stringify(encodeInput(f.inputs[0]))).toContain('Cancel the old task.');
+  const records=Array.from({length:13},(_,n)=>({id:'r'+n,sequence:n,at:now+n,kind:n===11?'user' as const:'assistant' as const,text:n===11?'Stop that earlier request.':'A relevant expressed opinion '+n}));
+  const selected=ambientDialogue(records,0,now,new Set(records.slice(0,11).map(r=>r.id)));
+  expect(selected.map(r=>r.id)).toEqual(expect.arrayContaining(['r11','r12']));
+  expect(selected.length).toBeLessThanOrEqual(12);
 });
 it('removes duplicate initiating excerpts when a tool already supplies that observation, and rechecks the result after revocation',async()=>{
   let n=0;const f=await fixture(async()=>{

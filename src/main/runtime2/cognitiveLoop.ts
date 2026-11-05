@@ -285,14 +285,15 @@ export class CognitiveLoop {
           if (this.host && !this.host.allowed('conversation')) page.records = page.records.filter(r=>r.kind!=='user' && r.kind!=='assistant');
           if (ambient && (!this.host || this.host.allowed('conversation'))) {
             const ended = await Promise.all(['completed', 'abandoned', 'retired'].map(status => this.archive.findState({ kind: 'investigation', status: status as 'completed' | 'abandoned' | 'retired', limit: 50 })));
-            endedTasks=(await this.permittedState('ambient',ended.flat())).map(({id,status,evidence})=>({id,status,evidence}));
+            const endedStates=await this.permittedState('ambient',ended.flat());
+            endedTasks=endedStates.map(({id,status,evidence})=>({id,status,evidence}));
             for(const state of endedTasks)for(const id of state.evidence)retiredDialogue.add(id);
             const states = allowedState;
             const active = this.options.host?.active();
             const subjects = this.options.host?.windows().filter(w=>w.handle===active).map(w=>w.title) ?? [];
             const ongoing=states.filter(s=>s.status==='active'&&['interest','intention','investigation','checkpoint'].includes(s.kind)&&!(s.kind==='checkpoint'&&s.evidence.some(id=>retiredDialogue.has(id))));
             const selected = await selectAmbientDialogue(this.archive,page.records,completedAfter,subjects,
-              ongoing.flatMap(s=>s.evidence),retiredDialogue);
+              ongoing.flatMap(s=>s.evidence),retiredDialogue,endedStates);
             page.records = [...selected, ...page.records.filter(r => (r.kind === 'tool-call' || r.kind === 'tool-result') && actualResults.has(r.requestId))]
               .sort((a,b)=>a.sequence-b.sequence);
           }

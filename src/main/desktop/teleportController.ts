@@ -103,42 +103,42 @@ export class TeleportController {
     if (this.busy) return false;
     this.busy = true;
     const revision=this.revision;
-    try { const complete = await this.glide(dest, {...options,cancelled:()=>revision!==this.revision||!!options.cancelled?.()}); if (complete) { this.d.moved?.(dest, 'glide'); if (!options.silent) this.d.arrived?.(dest, 'direct'); } return complete; } finally { this.busy = false; }
+    try { const result = await this.glide(dest, {...options,cancelled:()=>revision!==this.revision||!!options.cancelled?.()}); if (result.ok) { this.d.moved?.(dest, 'glide'); if (!options.silent) this.d.arrived?.(dest, 'direct'); } return result.ok; } finally { this.busy = false; }
   }
 
   /** Glide across the desktop (B 4:03 dash): the window slides, hair streams behind her. */
-  private async glide(dest: Destination, options: { gentle?: boolean; cancelled?: () => boolean; canOccupy?: (r: Rect) => boolean; curve?: number; pace?: number; hop?: boolean } = {}): Promise<boolean> {
-    if(options.cancelled?.())return false;
+  private async glide(dest: Destination, options: { gentle?: boolean; cancelled?: () => boolean; canOccupy?: (r: Rect) => boolean; curve?: number; pace?: number; hop?: boolean } = {}): Promise<{ok:boolean;detail:string}> {
+    if(options.cancelled?.())return {ok:false,detail:'Glide interrupted before departure.'};
     await this.d.prepareFlight?.('glide');
-    if(options.cancelled?.())return false;
+    if(options.cancelled?.())return {ok:false,detail:'Glide interrupted before departure.'};
     const cur = this.d.bounds();
-    if (!cur) return false;
+    if (!cur) return {ok:false,detail:'Character is not on screen.'};
     const dx = dest.x - cur.x, dy = dest.y - cur.y;
     const distance = Math.hypot(dx, dy);
-    if (distance < 2) return true;
+    if (distance < 2) return {ok:true,detail:'Already at the destination.'};
     const safe = (r: Rect) => this.d.canOccupy?.(r) !== false && options.canOccupy?.(r) !== false;
     const plan = traversalPlan(cur, dest, this.d.displays(), safe, options.hop);
-    if (!plan) return false;
+    if (!plan) return {ok:false,detail:'No safe traversal path to the destination.'};
     const length = plan.points.reduce((n, p, i) => n + Math.hypot(p.x - (plan.points[i - 1] ?? cur).x, p.y - (plan.points[i - 1] ?? cur).y), 0);
     const dur = (plan.kind === 'hop' ? Math.max(400, length / .55) : options.gentle ? Math.min(3800, Math.max(800, length / .32)) : Math.min(2400, Math.max(520, length / .72))) * Math.max(.6, Math.min(1.6, options.pace ?? 1));
     this.d.cue({ type: 'dash', dir: dx < 0 ? -1 : 1 });
     const t0 = Date.now();
-    const complete = await new Promise<boolean>((resolve) => {
+    const result = await new Promise<{ok:boolean;detail:string}>((resolve) => {
       const step = () => {
-        if (options.cancelled?.()) { clearInterval(timer); resolve(false); return; }
+        if (options.cancelled?.()) { clearInterval(timer); resolve({ok:false,detail:'Glide interrupted during travel; native position may have changed.'}); return; }
         const u = Math.min(1, (Date.now() - t0) / dur);
         // Minimum-jerk timing: zero velocity AND acceleration at takeoff and contact.
         const e = u * u * u * (10 + u * (-15 + 6 * u));
         const point = traversalPoint(cur, plan, e);
         const step = { ...dest, x: Math.round(point.x), y: Math.round(point.y) };
-        if (!safe(step)) { clearInterval(timer); resolve(false); return; }
+        if (!safe(step)) { clearInterval(timer); resolve({ok:false,detail:'Glide stopped at a protected area; native position may have changed.'}); return; }
         this.d.move(step, 'glide');
-        if (u >= 1) { clearInterval(timer); resolve(true); }
+        if (u >= 1) { clearInterval(timer); resolve({ok:true,detail:'Glide reached the destination.'}); }
       };
       const timer = setInterval(step, 16);
     });
     this.d.cue({ type: 'dash', dir: 0 });
-    return complete;
+    return result;
   }
 
   async go(target: TeleportTarget, reason: 'manual' | 'auto' | 'ai', how: 'teleport' | 'glide' | 'either' = 'teleport'): Promise<{ ok: boolean; detail: string; to?: Rect }> {
@@ -162,8 +162,8 @@ export class TeleportController {
     const near = Math.hypot(dest.x - cur.x, dest.y - cur.y) < 900 && this.d.displays().some((x) => x.workArea.x <= cur.x + cur.width / 2 && cur.x + cur.width / 2 < x.workArea.x + x.workArea.width && x.workArea.x <= dest.x + dest.width / 2 && dest.x + dest.width / 2 < x.workArea.x + x.workArea.width);
     if (dest.kind !== 'perch' && (how === 'glide' || (how === 'either' && near))) {
       try {
-        const completed = await this.glide(dest, { cancelled: () => revision !== this.revision || reason === 'auto' && !!this.automaticBlock() });
-        if (!completed) return { ok: false, detail: this.automaticBlock() ?? 'Automatic movement interrupted.' };
+        const result = await this.glide(dest, { cancelled: () => revision !== this.revision || reason === 'auto' && !!this.automaticBlock() });
+        if (!result.ok) return { ok: false, detail: revision !== this.revision ? 'Movement cancelled by a newer instruction; native position may have changed.' : (reason === 'auto' ? this.automaticBlock() : null) ?? result.detail };
         this.count++;
         this.last = `${new Date().toLocaleTimeString()} (${reason}, glide ${target}) → ${dest.x},${dest.y}`;
         this.d.moved?.(dest, 'glide');

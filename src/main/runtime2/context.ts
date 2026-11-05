@@ -19,8 +19,9 @@ export function ambientDialogue(records: ConversationRecord[], completedAfter: n
     exchanges.at(-1)!.push(record);
   }
   const selected: ConversationRecord[][] = []; let count = 0, bytes = 0;
+  const latestUser = dialogue.findLast(r=>r.kind==='user');
   const ranked = exchanges.map((exchange,index)=>({exchange,index,relevant:exchange.some(r=>relevantIds.has(r.id))}))
-    .sort((a,b)=>Number(b.relevant)-Number(a.relevant)||b.index-a.index);
+    .sort((a,b)=>Number(b.exchange.some(r=>r.id===latestUser?.id))-Number(a.exchange.some(r=>r.id===latestUser?.id))||Number(b.relevant)-Number(a.relevant)||b.index-a.index);
   for (const {exchange} of ranked) {
     const size = Buffer.byteLength(JSON.stringify(exchange));
     if (count + exchange.length > 12 || bytes + size > 4500) continue;

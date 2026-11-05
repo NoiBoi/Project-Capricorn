@@ -53,6 +53,39 @@ function rig() {
     canOccupy: () => !blocked, cue: c => { cues.push(c); if (c.type === 'teleport') queueMicrotask(() => t.ack(c.id, c.phase)); } });
   return { t, moved, frames, cues, block: () => { blocked = true; } };
 }
+it.each(['manual','ai'] as const)('reports the protected traversal for %s glide even when the legacy AI monitor is disconnected',async reason=>{
+  const moved=vi.fn(),move=vi.fn(),arrived=vi.fn();
+  const start={x:300,y:300,width:180,height:240};
+  const t=new TeleportController({settings:()=>structuredClone(DEFAULT_SETTINGS),bounds:()=>start,move,moved,arrived,
+    displays:()=>[{id:1,bounds:{x:0,y:0,width:1920,height:1080},workArea:{x:0,y:0,width:1920,height:1040},scaleFactor:1}],
+    cursor:()=>({x:0,y:0}),activeWindow:()=>null,aiConnected:()=>false,blocked:()=>null,userIdleSec:()=>0,log:nullLogger,cue:()=>{},
+    // The destination is clear; the rounded first frame meets a protected area.
+    canOccupy:r=>r.x!==start.x||r.y!==start.y});
+  expect(await t.go('left',reason,'glide')).toEqual({ok:false,detail:'Glide stopped at a protected area; native position may have changed.'});
+  expect(move).not.toHaveBeenCalled();expect(moved).not.toHaveBeenCalled();expect(arrived).not.toHaveBeenCalled();
+  expect(t.count).toBe(0);expect(t.active).toBe(false);
+});
+it('attributes interrupted AI travel to cancellation, and keeps automatic admission checks intact',async()=>{
+  vi.useFakeTimers();const r=rig();
+  const travel=r.t.go('left','ai','glide');await vi.advanceTimersByTimeAsync(160);r.t.cancel();
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(await travel).toMatchObject({ok:false,detail:expect.stringContaining('cancelled by a newer instruction')});
+  expect(r.moved).not.toHaveBeenCalled();expect(r.t.count).toBe(0);
+  expect(await r.t.go('left','auto','glide')).toMatchObject({ok:false,detail:'AI is not connected'});
+});
+it('reports a path failure before native travel and admits successful AI glide without the legacy monitor',async()=>{
+  vi.useFakeTimers();let protectedPath=true,bounds={x:300,y:300,width:180,height:240};const moved=vi.fn();
+  const t=new TeleportController({settings:()=>structuredClone(DEFAULT_SETTINGS),bounds:()=>bounds,move:r=>{bounds=r;},moved,
+    displays:()=>[{id:1,bounds:{x:0,y:0,width:1920,height:1080},workArea:{x:0,y:0,width:1920,height:1040},scaleFactor:1}],
+    cursor:()=>({x:0,y:0}),activeWindow:()=>null,aiConnected:()=>false,blocked:()=>null,userIdleSec:()=>0,log:nullLogger,cue:()=>{},
+    canOccupy:()=>!protectedPath,prepareFlight:async()=>{protectedPath=true;}});
+  protectedPath=false;
+  expect(await t.go('left','ai','glide')).toEqual({ok:false,detail:'No safe traversal path to the destination.'});
+  expect(moved).not.toHaveBeenCalled();expect(t.count).toBe(0);
+  // A separate clear route proves disconnected legacy status is not AI admission.
+  const r=rig();const travel=r.t.go('left','ai','glide');await vi.advanceTimersByTimeAsync(5000);
+  expect(await travel).toMatchObject({ok:true});expect(r.moved).toHaveBeenCalledOnce();expect(r.t.count).toBe(1);
+});
 it('executes the hop through native positions, stops on interruption and emits no false arrival', async () => {
   vi.useFakeTimers(); const r = rig();
   const flight = r.t.flyTo({ ...pet, x: pet.x + 160, kind: 'spot' }, { hop: true, silent: true });
