@@ -52,6 +52,7 @@ export class Endpointer {
 
 /** Microphone capture. The stream is opened only while recording and released immediately. */
 export class MicRecorder {
+  private generation=0;
   private ctx: AudioContext | null = null;
   private stream: MediaStream | null = null;
   private node: ScriptProcessorNode | null = null;
@@ -62,7 +63,10 @@ export class MicRecorder {
 
   async start(autoStop: boolean, onAutoStop: () => void) {
     if (this.stream) return;
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    const generation=++this.generation;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false });
+    if(generation!==this.generation){stream.getTracks().forEach(t=>t.stop());return;}
+    this.stream=stream;
     this.ctx = new AudioContext({ sampleRate: 16000 });
     const src = this.ctx.createMediaStreamSource(this.stream);
     this.node = this.ctx.createScriptProcessor(2048, 1, 1);
@@ -81,12 +85,15 @@ export class MicRecorder {
 
   /** Stop and return WAV (16 kHz mono) — or null when cancelled/empty. */
   async stop(cancel = false): Promise<{ wav: Uint8Array; durationMs: number } | null> {
+    this.generation++;
     const rate = this.ctx?.sampleRate ?? 16000;
+    const ctx=this.ctx,chunks=this.chunks;
+    if(this.node)this.node.onaudioprocess=null;
     this.node?.disconnect();
     this.stream?.getTracks().forEach((t) => t.stop());
-    await this.ctx?.close().catch(() => {});
     this.node = null; this.stream = null; this.ctx = null; this.level = 0;
-    const chunks = this.chunks; this.chunks = [];
+    this.chunks = [];
+    await ctx?.close().catch(() => {});
     if (cancel || !chunks.length) return null;
     const total = chunks.reduce((n, c) => n + c.length, 0);
     const all = new Float32Array(total);

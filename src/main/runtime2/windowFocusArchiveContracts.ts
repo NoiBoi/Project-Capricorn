@@ -64,7 +64,7 @@ export function validateDiscovery(input: DiscoveryQuery) {
 export function validateId(id: string) { if (typeof id !== 'string' || !id.length || id.length > 256) throw Error('Invalid observation ID'); }
 export function validateObservation(o: Observation) {
   validateId(o?.id);
-  if (typeof o.at !== 'number' || !Number.isFinite(o.at) || typeof o.source !== 'string' || !o.source.length || o.source.length > 256 || !['window-metadata','browser-page','screenshot','application-text','accessibility'].includes(o.modality) ||
+  if (typeof o.at !== 'number' || !Number.isFinite(o.at) || typeof o.source !== 'string' || !o.source.length || o.source.length > 256 || !['window-metadata','browser-page','screenshot','application-text','accessibility','user-interaction'].includes(o.modality) ||
     !o.content || !(o.content.handle === null || typeof o.content.handle === 'string') || typeof o.content.title !== 'string' || typeof o.content.process !== 'string' ||
     (o.content.pid !== undefined && (!Number.isSafeInteger(o.content.pid) || o.content.pid < 0)) ||
     o.provenance?.authority !== 'host' || typeof o.provenance.collector !== 'string' || !o.provenance.collector || !o.provenance.metadata || typeof o.provenance.metadata !== 'object' || Array.isArray(o.provenance.metadata) || Object.values(o.provenance.metadata).some(v => typeof v !== 'string') ||

@@ -294,17 +294,19 @@ window.addEventListener('dblclick', () => { if (hit) void api.invoke('char:click
 window.addEventListener('contextmenu', (e) => { e.preventDefault(); if (hit) void api.invoke('char:menu'); });
 
 // ---------------------------------------------------------------- microphone
-async function micStart(autoStop: boolean) {
+let micRecordingId: number | undefined;
+async function micStart(autoStop: boolean, recordingId?:number) {
+  micRecordingId=recordingId;
   try {
     await mic.start(autoStop, () => void micStop(false));
   } catch (e) {
-    void api.invoke('char:micError', (e as Error).message || 'microphone unavailable');
+    void api.invoke('char:micError', {message:(e as Error).message || 'microphone unavailable',recordingId});
   }
 }
 async function micStop(cancel: boolean) {
-  if (!mic.active) return;
+  const recordingId=micRecordingId;
   const out = await mic.stop(cancel);
-  if (out) await api.invoke('char:audio', out);
+  if (out) await api.invoke('char:audio', {...out,recordingId});
 }
 
 // ---------------------------------------------------------------- cues from main
@@ -335,7 +337,7 @@ api.on('cue', (raw) => {
     case 'stopSpeech': speaker.stopAll(); textTalkUntil = 0; break;
     case 'wake': wakeAuto = true; behavior.react('surprised'); break;
     case 'mic':
-      if (c.command === 'start') { void micStart(wakeAuto); wakeAuto = false; speaker.stopAll(); }
+      if (c.command === 'start') { void micStart(wakeAuto,c.recordingId); wakeAuto = false; speaker.stopAll(); }
       else void micStop(c.command === 'cancel');
       break;
     case 'pause': setPaused(c.paused); if (c.paused) speaker.stopAll(); break;
@@ -395,7 +397,7 @@ api.on('settings:changed', (s) => { const wasSleeping = settings.behavior.mode =
   if (!paused) raf = requestAnimationFrame(loop);
   window.__capriDebug = {
     deepSleep, statusFx, behavior, anim, speaker, model, mic, fx, personality, attention, lifeEvent, get life() { return life; }, postures: POSTURES,
-    get pose() { return modelPose(); },
+    get pose() { return modelPose(); }, get phase() { return phase; },
     get surface() { return surface; },
     get attachment() { return attachment; },
     get hit() { return hit; },

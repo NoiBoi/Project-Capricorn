@@ -38,6 +38,7 @@ export class CognitiveLoop {
   private previousCompletion: 'silent' | 'dialogue' | 'tool-continuation' | 'failure' | null = null;
   private closed = false;
   private paused = false;
+  private awaitingRecoveryObservation = false;
   private phaseValue: AssistantPhase = 'idle';
   private conversationId = '';
   private inferenceReceipts: { at: number; model: string; requestId?: string; usage?: { inputTokens: number; outputTokens: number } }[] = [];
@@ -136,6 +137,7 @@ export class CognitiveLoop {
   }
   private due() { if (this.options.host && !this.options.host.allowed('state')) return []; const now = Date.now(); return this.canonical.filter(s => !this.baselineState(s) && !this.unavailableReviews.has(s.id) && s.dueAt !== null && s.dueAt <= now && (s.reviewedAt ?? -Infinity) < s.dueAt); }
   private ambientTrigger() {
+    if (this.awaitingRecoveryObservation) return;
     if (this.options.host && !this.options.host.allowed("disclose", undefined, "ambient")) return;
     if (this.options.daily && !this.options.daily.ambientReady()) return;
     this.attention.configure(this.options.daily?.ambientInterval ?? this.interval, this.options.daily?.config.requestsPerHour ?? 120);
@@ -179,6 +181,7 @@ export class CognitiveLoop {
     this.options.daily?.recorder.event('scheduler.observation', { source, identity, conditions, structural, ordinaryCandidate, coalesced: this.pendingAmbient, running: !!this.running });
     this.unavailableReviews.clear();
     if (!structural && !ordinaryCandidate && !this.attention.matchedCondition) return;
+    this.awaitingRecoveryObservation = false;
     if (!this.pendingAmbient) this.pendingSince = Date.now();
     this.lastChange = Date.now();
     this.pendingAmbient = true;
@@ -195,20 +198,21 @@ export class CognitiveLoop {
   private save(record: RecordInput) { if (this.closed) return Promise.reject(Error('Runtime is stopped.')); return this.archive.appendConversation(record); }
   async history(limit = 200): Promise<ChatMessage[]> {
     const page = await this.archive.conversation(Math.min(2000, limit), true);
-    return page.records.filter(r => r.kind === 'user' || r.kind === 'assistant').slice(-limit).map(r => ({ id: r.id, role: r.kind as 'user' | 'assistant', content: 'text' in r ? r.text : '', ts: r.at, meta: { provider: 'siwc' } }));
+    return page.records.filter(r => r.kind === 'user' || r.kind === 'assistant').slice(-limit).map(r => ({ id: r.id, role: r.kind as 'user' | 'assistant', content: 'text' in r ? r.text : '', ts: r.at, meta: { provider: 'siwc', ...('viaVoice' in r && r.viaVoice ? {viaVoice:true} : {}) } }));
   }
-  async send(text: string) {
+  async send(text: string, options: {viaVoice?:boolean} = {}) {
     if (this.options.daily?.paused) throw Error('Daily-test is paused. Start or resume the diagnostic session in Chat.');
     this.emit('runtime2:stopSpeech', {});
     if (this.options.host && !this.options.host.allowed('conversation')) throw Error('Runtime 2 durable conversation is disabled by history privacy controls.');
     if (this.closed || !text.trim() || text.length > 20_000) throw Error('Invalid user message or stopped runtime.');
     if (this.queuedUsers >= 32) throw Error('Conversation queue is full; wait for the current response.');
     this.queuedUsers++;
-    const message: ChatMessage = { id: randomUUID(), role: 'user', content: text, ts: Date.now() };
+    const message: ChatMessage = { id: randomUUID(), role: 'user', content: text, ts: Date.now(), ...(options.viaVoice?{meta:{viaVoice:true}}:{}) };
     try {
-      await this.save({ id: message.id, at: message.ts, kind: 'user', text });
+      await this.save({ id: message.id, at: message.ts, kind: 'user', text, ...(options.viaVoice?{viaVoice:true}:{}) });
+      this.options.daily?.recorder.event('user-message.admitted',{id:message.id,origin:options.viaVoice?'voice':'typed'});
       if (this.closed) return message.id;
-      this.emit('chat:message', { message }); if (this.ambientInFlight) this.current?.abort(); this.pendingUser = true; this.paused = false; this.kick();
+      this.emit('chat:message', { message }); if (this.ambientInFlight) this.current?.abort(); this.pendingUser = true; this.paused = false; this.awaitingRecoveryObservation=false; this.kick();
       return message.id;
     } finally { this.queuedUsers--; }
   }
@@ -216,7 +220,7 @@ export class CognitiveLoop {
   resume() { if (!this.closed) { this.paused = false; this.pendingUser = true; this.kick(); } }
   environment(paused: boolean) { this.environmentPaused = paused; if (paused) { this.environmentAbort = true; this.current?.abort(); } }
   async quiesce() { this.stop(); await this.running; }
-  stop() { this.emit('runtime2:stopSpeech', {}); this.pendingUser = false; this.paused = true; this.consumeObservations(); this.current?.abort(); }
+  stop() { this.emit('runtime2:stopSpeech', {}); this.pendingUser = false; this.paused = true; this.consumeObservations(); this.current?.abort(); this.phase('idle'); }
   private kick() {
     if (this.closed || this.running) return;
     this.running = this.drain().finally(() => {
@@ -306,7 +310,7 @@ export class CognitiveLoop {
           };
           const now = Date.now(), active = this.options.host?.active();
           const isCurrent = (o: import('./contracts').Observation) =>
-            active != null && liveSlots.get(observationSlot(o))?.id === o.id && o.content.handle === active;
+            o.modality !== 'user-interaction' && active != null && liveSlots.get(observationSlot(o))?.id === o.id && o.content.handle === active;
           const sceneFacts = [...bySlot.values()].filter(permitted)
             .sort((a,b) => Number(isCurrent(b)) - Number(isCurrent(a)) || b.at - a.at)
             .slice(0, lean ? 4 : cognitiveMode === 'routine' ? 6 : 12).map(o => sceneFact(o, isCurrent(o), now));
@@ -328,14 +332,14 @@ export class CognitiveLoop {
             continuity.push({id,representation:'omitted',reason:!o?'archive-unavailable':(o.disclosure?.retainUntil??Infinity)<=Date.now()?'retention-expired':'permission'});
           }
           const semantic = round === 0 ? await selectSemanticEvidence({
-            candidates: !ambient ? live.filter(o=>isCurrent(o)) : lean ? [...live, ...scene.recent, ...scene.changes, ...bySlot.values()] : [],
+            candidates: !ambient ? [...live.filter(o=>isCurrent(o)),...scene.recent.filter(o=>o.modality==='user-interaction')] : lean ? [...live, ...scene.recent, ...scene.changes, ...bySlot.values()] : scene.recent.filter(o=>o.modality==='user-interaction'),
             changed: changedIds, relevant: relevantEvidence, current: isCurrent, permitted,
             resolve: async o => {
               // A non-retained live observation is eligible only in this immediate request.
               if (o.disclosure?.retain === false && live.some(l=>l.id===o.id)) return o;
               return resolve(o.id);
             },
-          }) : await selectSemanticEvidence({ candidates: carried, changed: new Set(initiatingEvidence), relevant: relevantEvidence,
+          }) : await selectSemanticEvidence({ candidates: [...carried,...scene.recent.filter(o=>o.modality==='user-interaction')], changed: new Set([...initiatingEvidence,...changedIds]), relevant: relevantEvidence,
             current: isCurrent, permitted, resolve: o=>resolve(o.id) });
           const immediate = semantic.records.flatMap(r=>r.kind==='observation' && r.observation ? [r.observation] : []);
           const history = page.records.filter(r => r.kind === 'tool-call' || r.kind === 'tool-result'
@@ -625,9 +629,11 @@ export class CognitiveLoop {
         recorder?.event('provider.error', { outcome, code: failure?.code, status: failure?.status, detail: safeFailure(error), durationMs: Date.now() - cycleStarted }, { cycleId });
         if (!this.closed && partial) this.emit('chat:done', { message: { id: responseId, role: 'assistant', content: partial, ts: Date.now(), meta: { provider: 'siwc', interrupted: true } }, delivery: ambient ? 'aside' : 'reply' });
         if (!this.closed) {
-          this.notifyObservation();
           this.previousCompletion = 'failure';
-          this.paused = !this.pendingUser && !this.environmentAbort;
+          const recoverable=ambient && !signal.aborted && !this.paused && recoverableAmbientFailure(error);
+          if (recoverable) { this.consumeObservations(); this.awaitingRecoveryObservation=true; this.attention.complete(true); }
+          else this.paused ||= !this.pendingUser && !this.environmentAbort;
+          recorder?.event('cycle.recovery',{recoverable,waitingFor:recoverable?'new-eligible-observation':'explicit-resume-or-control-change',paused:this.paused},{cycleId});
           this.phase(signal.aborted ? 'idle' : 'error', signal.aborted ? 'Response cancelled or timed out. Saved conversation is preserved.' : safeFailure(error));
         }
       } finally { this.current = undefined; this.ambientInFlight = false; }
@@ -640,6 +646,14 @@ export class CognitiveLoop {
     this.closed = true; this.controller.abort(); this.current?.abort(); clearInterval(this.timer); this.provider.shutdown(); this.perception?.clear();
     await this.running;
   }
+}
+
+/** A later event may recover ordinary failures; hard permissions and ceilings stay paused. */
+export function recoverableAmbientFailure(error: unknown) {
+  const failure=error as {code?:string;status?:number;message?:string};
+  return ![401,403].includes(failure?.status??0) &&
+    !/session_request_limit|hourly_request_limit|reported_token_limit|usage_ledger|usage_limit|recording_inactive|paused|insufficient_quota|quota_exceeded|unauthorized|authorization|permission|invalid_(?:grant|token|refresh|client|api_key)|token_(?:expired|invalidated|reused)|not_eligible|unsupported|model_not_found/i.test(failure?.code??'') &&
+    !/disclos|permission|denied|disabled|lifetime storage ceiling|Tool round limit|sign in|CAPRI_V2_MODEL|catalog|context capacity/i.test(failure?.message??'');
 }
 
 /** Never expose arbitrary exceptions, request bodies, or authentication values. */

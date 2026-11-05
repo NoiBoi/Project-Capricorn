@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import type { ActionContext } from '../actions/registry';
 import { TypedCapabilityExecutor, type CapabilityDefinition } from '../../core/capabilities';
 import type { ConversationItem, LogicalConversation, Observation, ToolRequest, ToolExecution } from './contracts';
+import { interactionObservation } from './interactionContext';
 
 /** Isolated observation archive with optional provider-independent cognition. */
 export class Runtime2 {
@@ -98,7 +99,17 @@ export class Runtime2 {
     return task;
   }
   get chatState() { return this.cognitive?.state ?? { phase: 'idle' as const, busy: false }; }
-  async send(text: string) { await this.whenSettled(); if (!this.cognitive || this.state !== 'active') throw Error('Runtime 2 conversation is unavailable.'); return this.cognitive.send(text); }
+  async send(text: string, options: {viaVoice?: boolean} = {}) { await this.whenSettled(); if (!this.cognitive || this.state !== 'active') throw Error('Runtime 2 conversation is unavailable.'); return this.cognitive.send(text,options); }
+  async observeInteraction(event: import('./contracts').UserInteraction, target?: {handle:string;title:string}) {
+    if (!this.collecting || !this.perception) return;
+    const observation=interactionObservation(event,target);
+    if (!this.cognitive?.host?.allowed('collect',observation) || !this.cognitive.host.allowed('retain',observation)) {
+      this.daily?.recorder.event('interaction.admission',{kind:event.kind,accepted:false,reason:'privacy'}); return;
+    }
+    const task=this.perception.observe(observation);this.pendingSources.add(task);
+    try {await task;this.daily?.recorder.event('interaction.admission',{kind:event.kind,accepted:true,observationId:observation.id});return observation.id;}
+    finally {this.pendingSources.delete(task);}
+  }
   chatHistory(limit = 200) { return this.cognitive?.history(limit) ?? Promise.resolve([]); }
   environment(paused: boolean) { this.cognitive?.environment(paused); }
   async pauseDaily() { this.observationPaused = true; this.daily?.pause(); this.diagnosticCapture?.abort(); await this.cognitive?.quiesce(); this.perception?.clear(); }

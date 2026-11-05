@@ -92,7 +92,7 @@ export function selectModel(models: Model[], id?: string): Model {
 export function encodeInput(input: ModelInput): ResponseInput {
   const records: ResponseInput = input.records.map(record => {
     switch (record.kind) {
-      case 'user': return { role: 'user', content: JSON.stringify({ type: 'user_message', id: record.id, at: record.at, text: record.text }) };
+      case 'user': return { role: 'user', content: JSON.stringify({ type: 'user_message', id: record.id, at: record.at, text: record.text, ...(record.viaVoice ? {viaVoice:true} : {}) }) };
       case 'assistant': return { role: 'assistant', content: record.text };
       case 'observation': return { role: 'user', content: JSON.stringify({ type: 'host_observation', reference: record.observationId, at: record.at, evidenceContext: record.evidenceContext ?? 'historical', observation: record.observation ?? null }) };
       case 'tool-call': return { type: 'function_call', call_id: record.requestId, name: record.name, namespace: 'capri_archive', arguments: record.arguments };

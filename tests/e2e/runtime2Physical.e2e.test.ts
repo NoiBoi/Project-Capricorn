@@ -12,7 +12,7 @@ it('executes local intentions in the real renderer with supported poses, window 
   const dir=selectRuntime(env,os.homedir()).profile!;
   const output=process.env.CAPRI_PHYSICAL_OUTPUT;
   fs.mkdirSync(dir,{recursive:true});
-  fs.writeFileSync(path.join(dir,'settings.json'),JSON.stringify({firstRunComplete:true,ai:{provider:'offline'},character:{scale:.6,startupIntro:false,hideOnFullscreen:false},voice:{ttsEnabled:false},behavior:{quietHours:{enabled:false},smallActivities:true},actions:{policies:{teleport:'allow'}},teleport:{auto:false,effects:false}}));
+  fs.writeFileSync(path.join(dir,'settings.json'),JSON.stringify({firstRunComplete:true,ai:{provider:'offline'},character:{scale:.6,startupIntro:false,hideOnFullscreen:false},voice:{ttsEnabled:false},behavior:{quietHours:{enabled:false},smallActivities:true},actions:{policies:{teleport:'allow',read_screen:'allow'}},teleport:{auto:false,effects:false}}));
   let app:ElectronApplication|undefined;
   try {
     app=await electron.launch({args:[path.resolve(__dirname,'../..')],env});
@@ -23,6 +23,7 @@ it('executes local intentions in the real renderer with supported poses, window 
       g.__capriWindowInfo={'17':{title:'Embodiment fixture',process:'fixture.exe',pid:17}};
       g.__capriWindowsOverride=[{handle:17n,rect:{x:area.x+100,y:area.y+380,width:850,height:350},eligible:true}];
       g.__physicalCalls=0;
+      clearInterval(a.runtime2.cognitive.timer);
       a.runtime2.cognitive.provider={models:async()=>[{id:'synthetic',label:'Synthetic',contextTokens:128000}],shutdown(){},infer:async()=>{g.__physicalCalls++;throw Error('Movement must not invoke inference');}};
     });
     const move=async(target:string,posture='auto',handle?:string)=>app!.evaluate(async(_,{target,posture,handle})=>{
@@ -93,11 +94,13 @@ it('executes local intentions in the real renderer with supported poses, window 
     });
     await char.evaluate(()=>window.capri.invoke('char:drag','start'));
     await expect.poll(()=>app!.evaluate(()=>!!(globalThis as any).__releasePrepare)).toBe(true);
-    await app.evaluate(()=>{const g=globalThis as any;g.__capriDragInput.point.x+=30;g.__releasePrepare();g.__capri.teleporter.d.prepareFlight=g.__originalPrepare;});
+    await app.evaluate(()=>{const g=globalThis as any;g.__capriDragInput.point={...g.__capriDragInput.point,x:g.__capriDragInput.point.x+30};g.__releasePrepare();g.__capri.teleporter.d.prepareFlight=g.__originalPrepare;});
+    await expect.poll(()=>char.evaluate(()=>(window as any).__capriDebug.dragging)).toBe(true);
     await expect.poll(()=>app!.evaluate(async()=>!(await (globalThis as any).__pendingPhysical).ok)).toBe(true);
     expect(await app.evaluate(()=>(globalThis as any).__capri.physicalBehavior.snapshot().intention)).toBeNull();
     await app.evaluate(()=>{(globalThis as any).__capriDragInput.down=false;});
     await expect.poll(()=>char.evaluate(()=>(window as any).__capriDebug.dragging)).toBe(false);
+    await expect.poll(()=>app!.evaluate(async()=>{const a=(globalThis as any).__capri;return (await a.runtime2.recentObservations({limit:50})).some((o:any)=>o.modality==='user-interaction'&&o.content.interaction?.kind==='placement'&&o.content.interaction.interrupted===true);})).toBe(true);
     await app.evaluate(()=>{const g=globalThis as any;g.__capriWindowsOverride=[];g.__capri.perchTick();});
     await expect.poll(()=>app!.evaluate(()=>(globalThis as any).__capri.runtime2.cognitive.host.body().perchedWindow)).toBeNull();
     const calls=await app.evaluate(()=>(globalThis as any).__physicalCalls);expect(calls).toBe(0);

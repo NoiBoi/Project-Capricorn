@@ -517,6 +517,11 @@ let lastFps = 0;
 let lastPoseRenderer: import('../shared/developer').PoseRendererState | null = null;
 let lastCompletedArrival: { target: string; at: number } | null = null;
 let recording = false;
+let voiceGeneration=0, voiceTranscribing=false;
+let runtime2CharacterPhase: AssistantPhase | undefined;
+let runtime2SpeechId: string | undefined;
+let runtime2SpeechStarted=false;
+let dragInterruptedPhysical=false;
 let quitting = false;
 let charRestarts: number[] = [];
 const intervals: NodeJS.Timeout[] = [];
@@ -991,7 +996,7 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
   else if (!TEST && process.argv.includes('--minimize-capri')) setTimeout(() => taskbar?.command('minimize'), 800);
   else if (!TEST && process.argv.includes('--replay-intro')) setTimeout(() => { if (!opening.active) playOpening(); }, 800);
   if(TEST)(globalThis as any).__capriVisits={desktopVisits,physicalCues,taskbarVisit,adjustWithinWindow,recordDragOrigin,musicChanges,get lowerAnchor(){return lowerAnchor;},get localVisitActive(){return localVisitActive;}};
-  if (TEST) (globalThis as Record<string, unknown>).__capri = { runtime2, runtimeSelection, get physicalBehavior() { return physicalBehavior; }, windowFocusSource, buildDiagnosticSnapshot, diagnosticTraces, activateChatWindow, openLongTermChat, openCompanion, cognitiveRuntime, modelSessions, performanceDirector, performanceFeedback, dialogueCognition, agency, agencyHost, observeAgency, maintainAgency, cognitiveStore, get landingRest() { return landingRest; }, get falling() { return !!fallTimer; }, get theatre() { return theatre; }, runTheatre, theatreFrame, get teleporter() { return teleporter; }, get monitor() { return monitor; }, settings, convo, history, memory, honcho, life, relationship, personalContext, retiredLines, memoryLearner, conversationScene, get behavior() { return behavior; }, interactionProfile, notes, reminders, secrets, get charWin() { return charWin; }, get panelWin() { return panelWin; }, get developerWin() { return developerWin; }, bubble, get startupMs() { return startupMs; }, get speakCount() { return speakCount; }, generatedRemark, captureWindowObservation, visibleObservationWindows, sharedSceneContext, reactToOwnPanel, dropPerch, dropLower, placement, environmentalCuriosity, get lastInspection() { return lastInspection; }, get lastDialogueOutcome() { return lastDialogueOutcome; }, scenes, presentRemark, curiosityDetour, get curiosityActive() { return curiosityActive; }, outings, companionDialogue, interaction, pickupReaction, localDialogueContext, localActivity, gameActive, raiseTick, get exploringHandle() { return exploringHandle; }, get tourStage() { return tourStage; }, desktopWindows, safeForTarget, setNextVisit() { nextWindowVisit = 0; }, presenceTick, settleAfterDrop, throwCharacter, useComputer, exploreTick, get throwing() { return !!throwTimer; }, get attentionHandle() { return attentionHandle; }, get perchMode() { return perchMode; }, get nextWindowVisit() { return nextWindowVisit; }, systemIdleSec, perchTick, activities, favoriteSpots, cursorReturn, returnToCursor, setCursorIdle: (seconds: number) => { lastCursorMovedAt = Date.now() - seconds * 1000; }, pendingConfirms, log, get opening() { return opening; }, get taskbar() { return taskbar; }, playOpening, minimizeCapri, restoreCapri, company, visit, applyCompanyControl, presenceDebug: () => ({ target: String(lastDesktopHandle), desktop: lastDesktop, tracked: !!trackedWindowFor(lastDesktopHandle), request: !!behavior?.busy, revision: placementRevision, watched: String(watchedHandle), encounter: encounters.current }) };
+  if (TEST) (globalThis as Record<string, unknown>).__capri = { runtime2, runtimeSelection, startRecording,stopRecording,onAudio,flushRuntime2Contact,get voiceInput() {return {recording,transcribing:voiceTranscribing,id:voiceGeneration};},get physicalBehavior() { return physicalBehavior; }, windowFocusSource, buildDiagnosticSnapshot, diagnosticTraces, activateChatWindow, openLongTermChat, openCompanion, cognitiveRuntime, modelSessions, performanceDirector, performanceFeedback, dialogueCognition, agency, agencyHost, observeAgency, maintainAgency, cognitiveStore, get landingRest() { return landingRest; }, get falling() { return !!fallTimer; }, get theatre() { return theatre; }, runTheatre, theatreFrame, get teleporter() { return teleporter; }, get monitor() { return monitor; }, settings, convo, history, memory, honcho, life, relationship, personalContext, retiredLines, memoryLearner, conversationScene, get behavior() { return behavior; }, interactionProfile, notes, reminders, secrets, get charWin() { return charWin; }, get panelWin() { return panelWin; }, get developerWin() { return developerWin; }, bubble, get startupMs() { return startupMs; }, get speakCount() { return speakCount; }, generatedRemark, captureWindowObservation, visibleObservationWindows, sharedSceneContext, reactToOwnPanel, dropPerch, dropLower, placement, environmentalCuriosity, get lastInspection() { return lastInspection; }, get lastDialogueOutcome() { return lastDialogueOutcome; }, scenes, presentRemark, curiosityDetour, get curiosityActive() { return curiosityActive; }, outings, companionDialogue, interaction, pickupReaction, localDialogueContext, localActivity, gameActive, raiseTick, get exploringHandle() { return exploringHandle; }, get tourStage() { return tourStage; }, desktopWindows, safeForTarget, setNextVisit() { nextWindowVisit = 0; }, presenceTick, settleAfterDrop, throwCharacter, useComputer, exploreTick, get throwing() { return !!throwTimer; }, get attentionHandle() { return attentionHandle; }, get perchMode() { return perchMode; }, get nextWindowVisit() { return nextWindowVisit; }, systemIdleSec, perchTick, activities, favoriteSpots, cursorReturn, returnToCursor, setCursorIdle: (seconds: number) => { lastCursorMovedAt = Date.now() - seconds * 1000; }, pendingConfirms, log, get opening() { return opening; }, get taskbar() { return taskbar; }, playOpening, minimizeCapri, restoreCapri, company, visit, applyCompanyControl, presenceDebug: () => ({ target: String(lastDesktopHandle), desktop: lastDesktop, tracked: !!trackedWindowFor(lastDesktopHandle), request: !!behavior?.busy, revision: placementRevision, watched: String(watchedHandle), encounter: encounters.current }) };
 }
 
 // ---------------------------------------------------------------- desktop-pet handling: drop onto a ledge, throw
@@ -1176,10 +1181,28 @@ function reclampCharacter() {
 }
 
 function reactToOwnPanel(tab:string){
-  if (experimental) return;
+  if (experimental) {
+    if (!['settings','attention','voice','character','developer'].includes(tab)) return;
+    if (!runtime2?.collecting || !runtime2Allowed('collect') || !runtime2Allowed('retain')) return;
+    if (Date.now()-(runtime2PanelVisits.get(tab)??-Infinity)<120000) return;
+    runtime2PanelVisits.set(tab,Date.now());
+    recordRuntime2Interaction({kind:'interface',page:tab}); return;
+  }
   if(!['settings','attention','connections','model','voice','character','memory','privacy','system','developer'].includes(tab))return;
   if(ambientBlocked()||company.blocked()||bubble.state.composer||!settings.get().voice.interactionLines)return;
   void generatedRemark('own_panel',`The user opened Capri's own ${tab} page. No setting has necessarily changed. Only speak if this adds a specific thought to the current exchange; navigation alone needs no acknowledgement.`);
+}
+const runtime2PanelVisits=new Map<string,number>();
+const runtime2SettingChanges=new Map<string,string>();
+function recordRuntime2Interaction(event: import('./runtime2/contracts').UserInteraction, target?: {handle:string;title:string}) {
+  if (!runtime2?.collecting || developer?.active) return;
+  void runtime2.observeInteraction(event,target).catch(()=>log.warn('Runtime 2 interaction context unavailable'));
+}
+function runtime2PhaseCue(phase:AssistantPhase, reason:string) {
+  const actual=recording?'listening':voiceTranscribing?'transcribing':phase==='idle'&&runtime2SpeechId&&runtime2SpeechStarted?'speaking':phase;
+  if (runtime2CharacterPhase===actual) return;
+  runtime2CharacterPhase=actual;cue({type:'phase',phase:actual});
+  runtime2Daily?.recorder.event('character.phase',{phase:actual,reason,outcome:charWin&&!charWin.isDestroyed()?'dispatched':'character-unavailable'});
 }
 function openDeveloper() {
   if (developerWin && !developerWin.isDestroyed()) {
@@ -1254,13 +1277,16 @@ function openPanel(tab: string = 'chat',desiredNear?:DRect) {
 
 let turnSuccesses = 0, lastVictoryAt = 0;
 function toPanel(channel: string, payload: unknown) {
-  if (channel === 'runtime2:stopSpeech') { cue({ type: 'stopSpeech' }); return; }
+  if (channel === 'runtime2:stopSpeech') { runtime2SpeechId=undefined;runtime2SpeechStarted=false;cue({ type: 'stopSpeech' }); runtime2PhaseCue('idle','speech-interrupted'); return; }
   if (channel === 'runtime2:speak') {
     const p = payload as { id: string; text: string; ambient: boolean };
     const utteranceId = 'runtime2:' + p.id;
     const reason = p.ambient ? 'proactive' : 'reply';
     let suppressedBy: string | null = null;
+    runtime2SpeechId=utteranceId;
+    runtime2SpeechStarted=false;
     const accepted = speak(reason, utteranceId, p.text, undefined, block => { suppressedBy = block; });
+    if (!accepted) runtime2SpeechId=undefined;
     runtime2Daily?.recorder.event('speech.dispatch', { utteranceId, ambient: p.ambient, accepted, suppressedBy, outcome: accepted ? 'queued-not-yet-audible' : 'suppressed-by-speech-policy' });
     return;
   }
@@ -1275,6 +1301,10 @@ function toPanel(channel: string, payload: unknown) {
   }
   if (panelWin && !panelWin.isDestroyed()) panelWin.webContents.send(channel, payload);
   if (developerWin && !developerWin.isDestroyed()) developerWin.webContents.send(channel, payload);
+  if (experimental && channel==='chat:phase') {
+    const p=payload as {phase:AssistantPhase;delivery?:'aside'|'reply'};
+    if (p.delivery!=='aside') runtime2PhaseCue(p.phase,'direct-conversation');
+  }
   if (!bubble) return;
   if (channel === 'chat:message' && (payload as { message: ChatMessage }).message.role === 'user') bubble.begin();
   else if (channel === 'chat:phase') {
@@ -1502,7 +1532,18 @@ function updateAttention() {
 let lastCompanionEvent: LifeEvent | null = null;
 let lastCompanionEventAt = 0;
 function interaction(kind: 'pat' | 'poke') {
-  if (experimental) { physicalBehavior?.cancel('Direct user contact.'); lastInteraction=Date.now(); cue({type:'life',event:kind}); return; }
+  if (experimental) {
+    physicalBehavior?.cancel('Direct user contact.'); lastInteraction=Date.now(); cue({type:'life',event:kind});
+    runtime2Daily?.recorder.event('interaction.received',{kind,immediateReaction:'dispatched'});
+    if (!runtime2?.collecting || !runtime2Allowed('collect') || !runtime2Allowed('retain') || settings.get().behavior.mode==='sleep') return;
+    if(touchCount && (touchCount>=100 || lastInteraction-touchStartedAt>=3000))flushRuntime2Contact();
+    if (!touchCount) touchStartedAt=lastInteraction;
+    touchCount++;if(kind==='pat')touchPats++;else touchPokes++;
+    lastTouchAt=lastInteraction;
+    if(touchBurstTimer)clearTimeout(touchBurstTimer);
+    touchBurstTimer=setTimeout(flushRuntime2Contact,Math.min(900,Math.max(0,3000-(lastInteraction-touchStartedAt))));
+    return;
+  }
   cognitiveRuntime.preempt(kind,0);
   if(touchBurstTimer){clearTimeout(touchBurstTimer);touchBurstTimer=null;}
   theatre?.cancel();
@@ -1527,6 +1568,14 @@ function interaction(kind: 'pat' | 'poke') {
     if(touchCount!==count||lastTouchKind!==kind||convo.busy)return;
     void generatedRemark(kind,`This ongoing contact sequence contains ${touchPats} pats and ${touchPokes} pokes; latest contact: ${kind}. Counts and timing are internal context, not something to recite. This is actual contact history, not proof of affection, teasing or annoyance. Let your reaction develop from the handling, your current activity and prior words, without resetting your opinion or repeating an acknowledgement. A playful objection, enjoyment or a new thought can fit; silence is also a choice.`,{interactionGeneration:generation,interactionDevelopment:`${touchStartedAt}:${Math.floor(count/3)}`});
   },900);
+}
+function flushRuntime2Contact() {
+  if(touchBurstTimer)clearTimeout(touchBurstTimer);touchBurstTimer=null;
+  if(!touchCount)return;
+  const event={kind:'contact' as const,startedAt:touchStartedAt,endedAt:lastTouchAt,pats:touchPats,pokes:touchPokes};
+  touchCount=touchPats=touchPokes=0;
+  runtime2Daily?.recorder.event('interaction.coalesced',event);
+  recordRuntime2Interaction(event);
 }
 let behavior: BehaviorCore;
 let lastObservedDesktop = '';
@@ -1719,6 +1768,7 @@ async function curiosityDetour(text: string, tourValid?: () => boolean, develope
 }
 let lastArrivalRemark = 0;
 function pickupReaction() {
+  if (experimental) {physicalBehavior?.cancel('User pickup.');if(settings.get().behavior.mode!=='sleep')cue({type:'life',event:'hover'});return;}
   cognitiveRuntime.preempt('pickup',0);
   cancelBehavior();
   if (settings.get().behavior.mode !== 'sleep') cue({ type: 'life', event: 'hover' });
@@ -1733,6 +1783,11 @@ function arrivalRemark(reason: 'manual' | 'auto' | 'ai' | 'direct') {
 }
 let lastPlacementSignature='',lastPlacementSignatureAt=0,placementCount=0;
 function reactToPlacement(handle: bigint | null, movedAside = false, fromHandle?:bigint) {
+  if (experimental) {
+    const target=handle?{handle:String(handle),title:observedWindow(handle).title}:undefined;
+    recordRuntime2Interaction({kind:'placement',fromHandle:fromHandle?String(fromHandle):null,movedAside,surface:currentPoseSupport.kind,interrupted:dragInterruptedPhysical},target);
+    dragInterruptedPhysical=false;lastInteraction=Date.now();return;
+  }
   const b=herBounds(),signature=JSON.stringify([String(handle),b.x,b.y,movedAside]);
   if(signature===lastPlacementSignature&&Date.now()-lastPlacementSignatureAt<12000)return;
   placementCount=Date.now()-lastPlacementSignatureAt<120000?placementCount+1:1;
@@ -2145,6 +2200,7 @@ function setBehaviorMode(mode: Settings['behavior']['mode'], fromConversation = 
   try { settings.update({ behavior: { mode }, character: { animation: 'auto' } }); } finally { modeFromConversation = false; }
 }
 function onSettingsChanged(s: Settings) {
+  if (!s.voice.micPermission && (recording || voiceTranscribing)) stopRecording(true);
   observeAgency();
   theatre?.cancel();
   scenes?.privacyChanged();
@@ -2153,6 +2209,7 @@ function onSettingsChanged(s: Settings) {
   conversationScene?.privacyChanged();
   const privacySignature = JSON.stringify([s.memory.enabled, s.privacy.saveHistory, s.dialogue.localContext, s.actions.policies.read_screen,s.privacy.activityAwareness.enabled,s.privacy.activityAwareness.retentionDays,s.memory.historyRetentionDays]);
   if (privacySignature !== behaviorPrivacySignature) {
+    if(experimental){if(touchBurstTimer)clearTimeout(touchBurstTimer);touchBurstTimer=null;touchCount=touchPats=touchPokes=0;if(placementTimer)clearTimeout(placementTimer);placementTimer=null;runtime2PanelVisits.clear();runtime2SettingChanges.clear();stopRecording(true);}
     if (experimental && runtime2) void runtime2.revoke('screen').catch(() => log.warn('Runtime 2 privacy revocation failed'));
     diagnosticTraces?.clear(); modelSessions?.clear(); cognitiveRuntime?.clear();
     if (life) { cancelBehavior(); convo?.stop(); conversationScene?.invalidateContext(); chatEvidence.reset(); ambientEvidence.reset(); if (!s.memory.enabled || !s.privacy.saveHistory) memoryLearner?.discard(); else memoryLearner?.pause(); if (!experimental) void life.start(); life.ledger.flush(); }
@@ -2241,47 +2298,65 @@ function startRecording(): boolean {
   const s = settings.get();
   if (!s.voice.micPermission) { openPanel('voice'); toPanel('chat:phase', { phase: 'error', detail: 'Microphone is off. Enable it in Voice settings first.' }); return false; }
   if (recording) return true;
-  convo.stop(); // interrupt speech/generation when the user starts talking
+  if(runtime2)runtime2.stopChat();else convo.stop();
+  voiceGeneration++;voiceTranscribing=false;
   recording = true;
+  runtime2Daily?.recorder.event('voice.input',{stage:'recording-started',recordingId:voiceGeneration});
   wake.suppress(60_000);
   lastInteraction = Date.now();
-  cue({ type: 'mic', command: 'start' });
+  cue({ type: 'mic', command: 'start', recordingId:voiceGeneration });
   toPanel('chat:phase', { phase: 'listening' });
+  if(!experimental)cue({type:'phase',phase:'listening'});
   updateTrayMenu();
   return true;
 }
 function stopRecording(cancel = false) {
-  if (!recording) return;
-  cue({ type: 'mic', command: cancel ? 'cancel' : 'stop' });
-  if (cancel) { recording = false; toPanel('chat:phase', { phase: 'idle' }); updateTrayMenu(); }
+  if (!recording && !voiceTranscribing) return;
+  cue({ type: 'mic', command: cancel ? 'cancel' : 'stop',recordingId:voiceGeneration });
+  if (cancel) { runtime2Daily?.recorder.event('voice.input',{stage:'canceled',recordingId:voiceGeneration});voiceGeneration++;voiceTranscribing=false;recording = false; toPanel('chat:phase', { phase: 'idle' }); if(!experimental)cue({type:'phase',phase:'idle'});updateTrayMenu(); }
 }
 function onWake() {
   const s = settings.get();
-  if (s.behavior.doNotDisturb || recording || convo.busy) return;
+  if (s.behavior.doNotDisturb || recording || voiceTranscribing || (runtime2?runtime2.chatState.busy:convo.busy)) return;
   log.info('wake word');
   cue({ type: 'wake' });
   startRecording();
 }
-async function onAudio(wav: Uint8Array, durationMs: number) {
+async function onAudio(wav: Uint8Array, durationMs: number, recordingId?:number) {
+  runtime2Daily?.recorder.event('voice.input',{stage:'audio-received',recordingId,durationMs,bytes:wav.byteLength,accepted:recording&&recordingId===voiceGeneration&&settings.get().voice.micPermission});
+  if (!recording || recordingId!==voiceGeneration || !settings.get().voice.micPermission) return;
+  const generation=voiceGeneration;
   recording = false;
+  voiceTranscribing=true;
   wake.suppress(3000);
   updateTrayMenu();
-  if (durationMs < 300 || wav.byteLength < 2000) { toPanel('chat:phase', { phase: 'idle', detail: 'Didn’t catch that.' }); cue({ type: 'phase', phase: 'idle' }); return; }
+  if (durationMs < 300 || wav.byteLength < 2000) { voiceTranscribing=false;toPanel('chat:phase', { phase: 'idle', detail: 'Didn’t catch that.' }); if(!experimental)cue({ type: 'phase', phase: 'idle' }); return; }
   toPanel('chat:phase', { phase: 'transcribing' });
-  cue({ type: 'phase', phase: 'transcribing' });
+  if(!experimental)cue({ type: 'phase', phase: 'transcribing' });
   const s = settings.get();
   try {
-    const text = s.voice.sttEngine === 'openai'
+    const text = TEST && (globalThis as any).__capriTranscribe ? await (globalThis as any).__capriTranscribe(wav) : s.voice.sttEngine === 'openai'
       ? await transcribeOpenAI(wav, s.voice.openaiStt.baseUrl, s.voice.openaiStt.model, secrets.get('openaiVoice') ?? secrets.get('openai'))
       : await transcribeWindows(wav);
+    if(generation!==voiceGeneration || !settings.get().voice.micPermission || quitting){runtime2Daily?.recorder.event('voice.input',{stage:'transcript-discarded',recordingId:generation});return;}
+    voiceTranscribing=false;
     toPanel('transcript', { text, final: true });
-    if (!text) { toPanel('chat:phase', { phase: 'idle', detail: 'Didn’t catch that — try again or type.' }); cue({ type: 'phase', phase: 'idle' }); return; }
-    await convo.send(text, { viaVoice: true });
+    if (!text) { toPanel('chat:phase', { phase: 'idle', detail: 'Didn’t catch that — try again or type.' }); if(!experimental)cue({ type: 'phase', phase: 'idle' }); return; }
+    await sendUserMessage(text,{viaVoice:true});
   } catch (e) {
+    if(generation!==voiceGeneration)return;
+    voiceTranscribing=false;
     log.warn('transcription failed', { error: e as Error });
     toPanel('chat:phase', { phase: 'error', detail: `Speech-to-text failed: ${(e as Error).message}. You can type instead.` });
-    cue({ type: 'phase', phase: 'error' });
+    if(!experimental)cue({ type: 'phase', phase: 'error' });
   }
+}
+async function sendUserMessage(text:string,options:{viaVoice?:boolean}={}) {
+  if(runtime2){lastInteraction=Date.now();return runtime2.send(text,options);}
+  await developer.stop();
+  if(settings.get().behavior.mode==='sleep')setBehaviorMode('normal');
+  lastInteraction=Date.now();cancelBehavior();cue({type:'stopSpeech'});
+  return convo.send(text,options);
 }
 
 // ---------------------------------------------------------------- periodic
@@ -2437,6 +2512,7 @@ async function executeReturnToCursor(from: 'idle' | 'sleep') {
 function beginCharacterDrag() {
   if (developer.active) { void developer.stop(); return; }
   if (farewell?.active || drag.active || opening?.active || userHidden || fullscreenHidden || agentCtrl) return;
+  dragInterruptedPhysical=!!physicalBehavior?.snapshot().intention || !!teleporter?.active;
   physicalBehavior?.cancel();
   drag.begin(); // The 4-DIP movement threshold owns detachment, not a click.
 }
@@ -3185,7 +3261,7 @@ function registerShortcuts() {
     [['Control+Alt+T', 'Control+Alt+Y'], 'Push-to-talk', () => (recording ? stopRecording() : startRecording())],
     [['Control+Alt+H', 'Control+Alt+J'], 'Hide / show', toggleHidden],
     [['Control+Alt+C', 'Control+Alt+V'], 'Interact (click-through)', toggleInteract],
-    [['Control+Alt+X', 'Control+Alt+Z'], 'Stop / cancel', () => { theatre?.cancel(); cue({ type: 'flourish', kind: null }); void developer.stop(); convo.stop(); stopRecording(true); }],
+    [['Control+Alt+X', 'Control+Alt+Z'], 'Stop / cancel', () => { theatre?.cancel(); cue({ type: 'flourish', kind: null }); void developer.stop(); if(runtime2)runtime2.stopChat();else convo.stop(); stopRecording(true); }],
     [['Control+Alt+P', 'Control+Alt+O'], 'Teleport', () => void userTeleport('auto', 'manual')],
   ];
   for (const [accs, label, fn] of map) {
@@ -3474,14 +3550,20 @@ function registerIpc() {
   handle('taskbar:mode', 'taskbar', none, () => settings.get().behavior.mode);
   handle('settings:get', 'any', none, () => settings.get());
   handle('settings:set', 'panel', z.record(z.string(), z.unknown()), (patch) => {
-    const wasVoiced = settings.get().voice.ttsEnabled;
+    const before=settings.get(),wasVoiced = before.voice.ttsEnabled;
     const r = settings.update(patch);
     // Deliberate settings saves reach disk before the UI accepts them.
     // Automatic position writes retain their debounced path.
     settings.flush();
     if (wasVoiced !== r.settings.voice.ttsEnabled) {
       cue({ type: 'stopSpeech' }); cue({ type: 'react', reaction: r.settings.voice.ttsEnabled ? 'happy' : 'annoyed' });
-      void generatedRemark(r.settings.voice.ttsEnabled ? 'unmute' : 'mute');
+      if(!experimental)void generatedRemark(r.settings.voice.ttsEnabled ? 'unmute' : 'mute');
+    }
+    if(experimental){
+      const changes=[...(wasVoiced!==r.settings.voice.ttsEnabled?[`speech ${r.settings.voice.ttsEnabled?'enabled':'disabled'}`]:[]),
+        ...(before.behavior.mode!==r.settings.behavior.mode?[`behavior mode: ${r.settings.behavior.mode}`]:[]),
+        ...(before.character.scale!==r.settings.character.scale?[`character scale: ${r.settings.character.scale}`]:[])];
+      if(changes.length){for(const change of changes)runtime2SettingChanges.set(change.split(/[: ]/)[0],change);if(placementTimer)clearTimeout(placementTimer);placementTimer=setTimeout(()=>{placementTimer=null;const selected=[...runtime2SettingChanges.values()];runtime2SettingChanges.clear();recordRuntime2Interaction({kind:'interface',changes:selected});},900);}
     }
     if (!r.settings.memory.enabled || !r.settings.memory.autoLearn) memoryLearner.discard();
     return r;
@@ -3589,15 +3671,12 @@ function registerIpc() {
     }
     return 'Daily-test ' + action + ' complete.';
   });
-  handle('chat:send', 'chat', z.object({ text: str(20_000), viaVoice: z.boolean().optional() }), async ({ text }) => {
-    if (runtime2) return { messageId: await runtime2.send(text) };
-    await developer.stop();
-    if (settings.get().behavior.mode === 'sleep') setBehaviorMode('normal');
-    lastInteraction = Date.now(); cancelBehavior(); cue({ type: 'stopSpeech' });
-    return { messageId: await convo.send(text) };
+  handle('chat:send', 'chat', z.object({ text: str(20_000), viaVoice: z.boolean().optional() }), async ({ text,viaVoice }) => {
+    stopRecording(true);
+    return { messageId: await sendUserMessage(text,{viaVoice}) };
   });
   handle('chat:state', 'any', none, () => runtime2?.chatState ?? ({ phase: convo.phase, busy: convo.busy }));
-  handle('chat:stop', 'any', none, () => { if (runtime2) { runtime2.stopChat(); cue({ type: 'stopSpeech' }); return; } void developer.stop(); agentCtrl?.abort(); convo.stop(); });
+  handle('chat:stop', 'any', none, () => { stopRecording(true); if (runtime2) { runtime2.stopChat(); cue({ type: 'stopSpeech' }); return; } void developer.stop(); agentCtrl?.abort(); convo.stop(); });
   handle('chat:history', 'panel', z.object({ limit: z.number().int().min(1).max(2000).optional() }).optional(), (a) => runtime2 ? runtime2.chatHistory(a?.limit ?? 200) : history.recent(a?.limit ?? 200));
   handle('chat:clear', 'panel', none, async () => {
     if (runtime2) { await runtime2.clearChat(); return; }
@@ -3779,7 +3858,14 @@ function registerIpc() {
   handle('bubble:resize', 'bubble', z.number().finite().min(40).max(1200), (height) => bubble.resize(height));
   handle('char:menu', 'char', none, charMenu);
   handle('char:speechState', 'char', z.object({ utteranceId: str(100), state: z.enum(['start', 'end', 'error', 'cancel']) }), ({ utteranceId, state }) => {
-    if (utteranceId.startsWith('runtime2:')) { runtime2Daily?.recorder.event('speech.' + state, { utteranceId }); return; }
+    if (utteranceId.startsWith('runtime2:')) {
+      runtime2Daily?.recorder.event('speech.' + state, { utteranceId });
+      if(utteranceId===runtime2SpeechId){
+        if(state==='start'){runtime2SpeechStarted=true;runtime2PhaseCue('speaking','speech-start');}
+        else {runtime2SpeechId=undefined;runtime2SpeechStarted=false;runtime2PhaseCue(runtime2?.chatState.busy?'thinking':'idle','speech-'+state);}
+      }
+      return;
+    }
     const pending = pendingSpokenRemarks.get(utteranceId);
     if (pending) {
       if (state === 'start') pending.started = true;
@@ -3787,15 +3873,18 @@ function registerIpc() {
     }
     if (!/^(companion|remark|explore|rem):/.test(utteranceId)) convo.onSpeechEvent(state, utteranceId);
   });
-  handle('char:audio', 'char', z.object({ wav: z.instanceof(Uint8Array), durationMs: z.number().min(0).max(120_000) }), ({ wav, durationMs }) => {
+  handle('char:audio', 'char', z.object({ wav: z.instanceof(Uint8Array), durationMs: z.number().min(0).max(120_000),recordingId:z.number().int().nonnegative().optional() }), ({ wav, durationMs,recordingId }) => {
     if (wav.byteLength > 8 * 1024 * 1024) throw new Error('audio too large');
-    void onAudio(wav, durationMs);
+    void onAudio(wav, durationMs,recordingId);
   });
-  handle('char:micError', 'char', str(300), (msg) => {
-    recording = false;
+  handle('char:micError', 'char', z.union([str(300),z.object({message:str(300),recordingId:z.number().int().nonnegative().optional()})]), (error) => {
+    if(typeof error!=='string' && error.recordingId!==voiceGeneration)return;
+    const msg=typeof error==='string'?error:error.message;
+    voiceGeneration++;voiceTranscribing=false;recording = false;
     updateTrayMenu();
     log.warn('microphone error', { msg });
     toPanel('chat:phase', { phase: 'error', detail: `Microphone error: ${msg}` });
+    if(!experimental)cue({type:'phase',phase:'error'});
   });
   handle('char:performance','char',z.object({id:z.number().int().positive(),status:z.enum(['completed','interrupted'])}).strict(),result=>{ if(physicalReaction?.id===result.id)physicalReaction.status=result.status; else performanceDirector.animationResult(result.id,result.status); });
   handle('char:poseRenderer', 'char', z.object({ pose: z.enum(SECONDARY_POSES).nullable(), shader: z.boolean(), reduced: z.boolean(), motion: z.number().min(0).max(3), mood: z.enum(MOODS).optional(), clip: z.string().max(80).optional(), phase: z.enum(DEV_PHASES).optional(), attachment: z.string().max(40).nullable().optional(), posture:z.string().max(80).optional(),primaryPose:z.string().max(80).optional() }).strict(), state => { lastPoseRenderer = state; });
@@ -3891,6 +3980,8 @@ function cleanup() {
   stopFall();
   if (quitting) return;
   quitting = true;
+  stopRecording(true);
+  if(touchBurstTimer)clearTimeout(touchBurstTimer);
   if (placementTimer) clearTimeout(placementTimer);
   if (panelWatchdog) clearTimeout(panelWatchdog);
   for (const t of intervals) clearInterval(t);

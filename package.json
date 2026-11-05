@@ -17,7 +17,8 @@
     "continuity:recall": "node scripts/continuity-recall.mjs",
     "context:replay": "node scripts/personal-context-replay.mjs",
     "context:honcho:check": "node scripts/verify-honcho-comparison.mjs",
-    "test:cognitive": "vitest run tests/unit/cognitiveRuntime.test.ts"
+    "test:cognitive": "vitest run tests/unit/cognitiveRuntime.test.ts",
+    "preflight:runtime2-interactions": "node scripts/build.mjs && vitest run tests/unit/runtime2Interaction.test.ts tests/e2e/runtime2Interaction.e2e.test.ts --no-file-parallelism --testTimeout=60000 --hookTimeout=60000"
   },
   "author": "Capri Companion contributors",
   "license": "MIT",

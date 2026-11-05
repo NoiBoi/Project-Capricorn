@@ -9,7 +9,7 @@ export interface ChatMessage {
   role: ChatRole;
   content: string;
   ts: number;
-  meta?: { speech?:SpeechOrigin; provider?: string; error?: string; interrupted?: boolean; actionStatus?: string; private?: boolean; contextSources?: string[]; contextRecall?:boolean };
+  meta?: { viaVoice?: boolean; speech?:SpeechOrigin; provider?: string; error?: string; interrupted?: boolean; actionStatus?: string; private?: boolean; contextSources?: string[]; contextRecall?:boolean };
 }
 
 export interface MemoryRevision {
@@ -64,7 +64,7 @@ export type CharacterCue =
   | { type: 'speak'; utteranceId: string; text: string }
   | { type: 'stopSpeech' }
   | { type: 'wake' }
-  | { type: 'mic'; command: 'start' | 'stop' | 'cancel' }
+  | { type: 'mic'; command: 'start' | 'stop' | 'cancel'; recordingId?: number }
   | { type: 'pause'; paused: boolean }
   | { type: 'interact'; enabled: boolean }
   | { type: 'presence'; idleSec: number; quiet: boolean; simulated?: 'idle' | 'sleep' }
@@ -262,8 +262,8 @@ export interface InvokeMap {
   'char:click': [void, void];
   'char:menu': [void, void];
   'char:speechState': [{ utteranceId: string; state: 'start' | 'end' | 'error' | 'cancel' }, void];
-  'char:audio': [{ wav: Uint8Array; durationMs: number }, void];
-  'char:micError': [string, void];
+  'char:audio': [{ wav: Uint8Array; durationMs: number; recordingId?:number }, void];
+  'char:micError': [string | {message:string;recordingId?:number}, void];
   'char:performance': [{id:number;status:'completed'|'interrupted'},void];
   'char:poseRenderer': [import('./developer').PoseRendererState, void];
   'char:fps': [number, void];

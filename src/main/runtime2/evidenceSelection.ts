@@ -12,8 +12,9 @@ export async function selectSemanticEvidence(options: {
   const { changed, relevant, current, permitted, resolve } = options;
   const decisions: EvidenceDecision[] = [];
   const candidates = [...new Map(options.candidates.map(o => [o.id, o])).values()]
-    .filter(o => ['browser-page', 'application-text', 'accessibility'].includes(o.modality))
+    .filter(o => ['browser-page', 'application-text', 'accessibility','user-interaction'].includes(o.modality))
     .sort((a,b) => Number(relevant.has(b.id)) - Number(relevant.has(a.id)) ||
+      Number(b.modality==='user-interaction' && changed.has(b.id))-Number(a.modality==='user-interaction' && changed.has(a.id)) ||
       Number(current(b)) - Number(current(a)) || Number(changed.has(b.id)) - Number(changed.has(a.id)) ||
       Number(!!b.related?.length) - Number(!!a.related?.length) || b.at - a.at);
   const selected: ConversationRecord[] = [], texts = new Set<string>();

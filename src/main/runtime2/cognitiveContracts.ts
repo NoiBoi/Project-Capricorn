@@ -2,7 +2,7 @@ import type { WatchCondition } from './attention';
 import type { Observation } from './contracts';
 import type { CapabilityReceipt } from '../../core/capabilities';
 export type RecordInput = { id: string; at: number; inference?: { model: string; requestId?: string; usage?: { inputTokens: number; outputTokens: number; cachedInputTokens?: number } } } & (
-  | { kind: 'user' | 'assistant'; text: string }
+  | { kind: 'user' | 'assistant'; text: string; viaVoice?: boolean }
   | { kind: 'observation'; observationId: string; observation?: Observation; conditions?: readonly WatchCondition[]; evidenceContext?: 'current' | 'historical' }
   | { kind: 'tool-call'; requestId: string; name: string; arguments: string }
   | { kind: 'tool-result'; requestId: string; receipt: CapabilityReceipt; result?: unknown }
