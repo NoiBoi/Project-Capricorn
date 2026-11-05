@@ -16,9 +16,14 @@ it('runs varied local physical activity without any inference dependency or nati
   expect(r.host.ambient).toHaveBeenCalledTimes(5);expect(new Set(vi.mocked(r.host.ambient).mock.calls.map(c=>c[0])).size).toBe(4);
   expect(r.host.execute).not.toHaveBeenCalled();
 });
-it.each(['pinned','fullscreen','gaming','sleep','quiet','dragging'])('suppresses local motion and model placement while %s',async reason=>{
+it.each(['fullscreen','gaming','sleep','quiet','dragging','recovery','stay commitment','focus commitment','desktop unavailable'])('suppresses local motion and model placement while %s',async reason=>{
   const r=rig();r.block(reason);await r.body.tick();expect(await r.request({target:'perch'})).toMatchObject({ok:false,detail:reason});
   expect(r.host.execute).not.toHaveBeenCalled();expect(r.host.ambient).not.toHaveBeenCalled();
+});
+it.each(['User-pinned position','Movement permission denied'])('allows in-place maintenance while relocation is blocked by %s',async reason=>{
+  const r=rig();r.host.blocked=effect=>effect==='expression'?null:reason;r.host.obstructed=()=>true;
+  await r.body.tick();expect(await r.request({target:'taskbar'})).toMatchObject({ok:false,detail:reason});
+  expect(r.host.ambient).toHaveBeenCalledOnce();expect(r.host.execute).not.toHaveBeenCalled();
 });
 it('keeps an accompanying intention and debounces rapid focus changes',async()=>{
   const r=rig();await r.request({target:'accompany',posture:'sit'});expect(r.body.snapshot().intention?.resolvedHandle).toBe('1');

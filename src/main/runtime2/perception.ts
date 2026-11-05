@@ -14,7 +14,7 @@ export type DisclosureMode = 'direct' | 'ambient';
 export interface DesktopHost {
   windows(): KnownWindow[];
   active(): string | null;
-  allowed(operation: 'collect' | 'disclose' | 'retain' | 'move' | 'state' | 'conversation', observation?: Observation, mode?: DisclosureMode): boolean;
+  allowed(operation: 'collect' | 'disclose' | 'retain' | 'move' | 'expression' | 'state' | 'conversation', observation?: Observation, mode?: DisclosureMode): boolean;
   capture(handle: string, signal: AbortSignal): Promise<WindowObservation | undefined>;
   move(target: PhysicalIntent['target'], handle: string | undefined, signal: AbortSignal, intent?: PhysicalIntent): Promise<{ ok: boolean; detail: string; [key: string]: unknown }>;
   body(): unknown;

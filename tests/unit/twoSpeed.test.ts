@@ -91,6 +91,18 @@ it('finishes dialogue, a persistent semantic movement intention and a nonverbal 
   expect(emitted.some(e=>e.channel==='runtime2:speak')).toBe(true);
   expect((await archive.conversation()).records.flatMap(r=>r.kind==='tool-result'?[r.receipt.outcome]:[])).toEqual(['completed','dispatched']);
 });
+it('admits reaction tools independently of denied movement and preserves their distinct receipts',async()=>{
+  const {wake,host,archive}=await fixture(async()=>({text:'',calls:[
+    call('relocate','move',{target:'taskbar'}),call('express','react',{emotion:'nod'})]}));
+  host.allowed=operation=>operation!=='move';
+  await wake(observation());
+  expect(host.move).not.toHaveBeenCalled();expect(host.react).toHaveBeenCalledWith('nod',expect.any(AbortSignal));
+  const records=(await archive.conversation(20)).records;
+  expect(records).toEqual(expect.arrayContaining([
+    expect.objectContaining({kind:'tool-result',requestId:'relocate',receipt:expect.objectContaining({outcome:'denied'})}),
+    expect.objectContaining({kind:'tool-result',requestId:'express',receipt:expect.objectContaining({outcome:'dispatched'})}),
+  ]));
+});
 it('retains silent curiosity and a checkpoint, moves and reacts with independent receipts, then connects later evidence', async () => {
   let round = 0;
   const { wake, inputs, archive, host, loop, root } = await fixture(async (_m,input) => {

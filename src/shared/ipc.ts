@@ -116,10 +116,10 @@ export interface Diagnostics {
 }
 
 export interface PanelEvents {
-  'chat:delta': { messageId: string; delta: string };
-  'chat:done': { message: ChatMessage };
+  'chat:delta': { messageId: string; delta: string; delivery?: 'aside' | 'reply' };
+  'chat:done': { message: ChatMessage; delivery?: 'aside' | 'reply' };
   'chat:message': { message: ChatMessage };
-  'chat:phase': { phase: AssistantPhase; detail?: string };
+  'chat:phase': { phase: AssistantPhase; detail?: string; delivery?: 'aside' | 'reply' };
   'action:confirm': ActionRequest;
   'action:result': ActionResult;
   'memory:changed': null;

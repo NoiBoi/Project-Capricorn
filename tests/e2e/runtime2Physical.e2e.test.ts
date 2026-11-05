@@ -49,6 +49,39 @@ it('executes local intentions in the real renderer with supported poses, window 
     expect(reaction.ok).toBe(true);
     await expect.poll(()=>app!.evaluate(()=>{const a=(globalThis as any).__capri;return a.runtime2.cognitive.host.body().reaction?.status;}),{timeout:5000}).toBe('completed');
     observations.push({reaction:await app.evaluate(()=>{const a=(globalThis as any).__capri;return a.runtime2.cognitive.host.body().reaction;})});
+    // Dropping on the current support exercises the real user-placement pin.
+    await app.evaluate(()=>{const a=(globalThis as any).__capri;a.interaction('pat');a.settleAfterDrop();});
+    expect(await app.evaluate(()=>(globalThis as any).__capri.runtime2.cognitive.host.body().pinned)).toBe(true);
+    expect(await move('taskbar')).toMatchObject({ok:false,detail:'User-pinned position'});
+    const pinned=await app.evaluate(async()=>{
+      const a=(globalThis as any).__capri,b=a.charWin.getBounds(),p=a.physicalBehavior;
+      const ambient=p.host.ambient;let activities=0;p.host.ambient=(v:number)=>{activities++;ambient(v);};
+      p.nextAmbient=0;await p.tick();p.host.ambient=ambient;
+      return {activities,before:b,after:a.charWin.getBounds(),reaction:await a.runtime2.cognitive.host.react('nod',new AbortController().signal)};
+    });
+    expect(pinned.activities).toBe(1);expect(pinned.after).toEqual(pinned.before);expect(pinned.reaction.ok).toBe(true);
+    await expect.poll(()=>app!.evaluate(()=>(globalThis as any).__capri.runtime2.cognitive.host.body().reaction?.status),{timeout:5000}).toBe('completed');
+    for(const restriction of ['quiet','sleep','hidden','commitment']) {
+      const constrained=await app.evaluate(async(_,restriction)=>{
+        const a=(globalThis as any).__capri,p=a.physicalBehavior,host=a.runtime2.cognitive.host;
+        if(restriction==='quiet')a.settings.update({behavior:{doNotDisturb:true}});
+        if(restriction==='sleep')a.settings.update({behavior:{mode:'sleep'}});
+        if(restriction==='hidden')a.minimizeCapri();
+        if(restriction==='commitment')await a.applyCompanyControl({kind:'stay',minutes:5});
+        const ambient=p.host.ambient;let activities=0;p.host.ambient=()=>{activities++;};p.nextAmbient=0;await p.tick();p.host.ambient=ambient;
+        const reaction=await host.react('nod',new AbortController().signal),movement=await host.move('taskbar',undefined,new AbortController().signal);
+        if(restriction==='quiet')a.settings.update({behavior:{doNotDisturb:false}});
+        if(restriction==='sleep')a.settings.update({behavior:{mode:'normal'}});
+        if(restriction==='hidden')a.restoreCapri();
+        if(restriction==='commitment')await a.applyCompanyControl({kind:'cancel_intentions'});
+        return {activities,reaction,movement};
+      },restriction);
+      expect(constrained.activities,restriction).toBe(0);expect(constrained.reaction.ok,restriction).toBe(false);expect(constrained.movement.ok,restriction).toBe(false);
+    }
+    // The authorized native command can supersede the placement; the model cannot.
+    expect(await char.evaluate(()=>window.capri.invoke('teleport:now','left'))).toMatchObject({ok:true});
+    expect(await app.evaluate(()=>(globalThis as any).__capri.runtime2.cognitive.host.body().pinned)).toBe(false);
+    expect((await move('perch','sit','17')).ok).toBe(true);
     await app.evaluate(()=>{const a=(globalThis as any).__capri;a.interaction('pat');});
     expect(await app.evaluate(()=>(globalThis as any).__capri.physicalBehavior.snapshot().intention)).toBeNull();
     await app.evaluate(()=>{

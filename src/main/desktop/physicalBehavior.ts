@@ -11,7 +11,7 @@ export const MovementIntent = z.object({
 export type PhysicalIntent = z.infer<typeof MovementIntent>;
 export interface PhysicalOutcome { ok: boolean; detail: string; [key: string]: unknown }
 export interface PhysicalEnvironment {
-  blocked(): string | null;
+  blocked(effect?: 'move' | 'expression'): string | null;
   busy(): boolean;
   targetValid(handle: string): boolean;
   targetIdentity?(handle: string): string | undefined;
@@ -94,14 +94,16 @@ export class PhysicalBehavior {
     if(entry?.until && now>=entry.until){this.cancel('Physical intention expired.');return;}
     if(entry?.handle&&!this.host.targetValid(entry.handle)){this.cancel('Dependent window disappeared or became invalid.');return;}
     if(entry?.handle&&entry.identity!==undefined&&entry.identity!==this.host.targetIdentity?.(entry.handle)){this.cancel('Window identity changed; the handle may have been recycled.');return;}
-    if(this.host.blocked()) { if(this.flight)this.cancel('Physical constraints interrupted movement.'); return; }
+    const movementBlocked=this.host.blocked();
+    if(movementBlocked && this.flight)this.cancel('Physical constraints interrupted movement.');
+    if(this.host.blocked('expression'))return;
     if(this.flight||this.host.busy())return;
-    if(this.host.obstructed?.()&&now>=this.nextMove) {
+    if(!movementBlocked&&this.host.obstructed?.()&&now>=this.nextMove) {
       this.cancel('Physical validity takes priority over the old intention.');
       const recovery=this.current={id:++this.serial,source:'local-safety',intent:MovementIntent.parse({target:'away'}),lastAt:0};
       await this.run(recovery);return;
     }
-    if(entry && now>=this.nextMove) {
+    if(!movementBlocked&&entry && now>=this.nextMove) {
       if(entry.intent.target==='follow_cursor') { await this.run(entry);return; }
       if(entry.intent.target==='accompany'&&active&&active!==entry.handle&&now-this.focusAt>=5000&&this.host.targetValid(active)) {
         entry.handle=active;entry.identity=this.host.targetIdentity?.(active);await this.run(entry);return;

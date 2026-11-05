@@ -51,6 +51,10 @@ export class BuddyBubble {
   private timer: NodeJS.Timeout | null = null;
   private visible = false;
   private dismissed = false;
+  // A stream may finish after another utterance has appeared. Never resurrect
+  // its dismissed identity, even when open()/begin() resets presentation state.
+  private dismissedIds = new Set<string>();
+  lastPresentation: { accepted: boolean; suppressedBy: string | null } = { accepted: false, suppressedBy: 'no-text' };
   private disposed = false;
   private height = 170;
   private serial=0;
@@ -103,7 +107,7 @@ export class BuddyBubble {
     },Math.max(1,this.expiresAt-this.clock()));this.timer.unref?.();
   }
   private lastBounds: Rectangle | null = null;
-  constructor(private d: { anchor(): Rectangle | null; head?(): { x: number; y: number }; body?(): Rectangle | undefined; inverted?(): boolean; enabled(): boolean; filterText?(text: string): string; preload: string; log: Logger }) {}
+  constructor(private d: { anchor(): Rectangle | null; head?(): { x: number; y: number }; body?(): Rectangle | undefined; inverted?(): boolean; enabled(): boolean; blocked?(delivery: 'aside' | 'reply'): string | null; filterText?(text: string): string; preload: string; log: Logger }) {}
   get nativeActive(){const active=foregroundHandle();return !!active&&!!this.window&&!this.window.isDestroyed()&&active===handleToBigint(this.window.getNativeWindowHandle());}
   get hasVisibleText() { return this.visible && (!!this.state.text||this.previous.length>0); }
   private ensure() {
@@ -118,7 +122,7 @@ export class BuddyBubble {
   private send() { if (this.window && !this.window.isDestroyed() && !this.window.webContents.isLoadingMainFrame()) this.window.webContents.send('bubble:state', this.state); }
   private focusInput() { const w = this.window; if (!w || w.isDestroyed() || w.webContents.isLoadingMainFrame()) return; if (!OFFSCREEN) { w.setFocusable(true);w.setIgnoreMouseEvents(false);w.show();w.focus();w.webContents.focus();activateChatWindow(w.getNativeWindowHandle()); } w.webContents.send('bubble:focus', null); }
   private show(focus = false) {
-    if (this.disposed || this.dismissed || (!this.d.enabled() && !this.state.composer)) return false;
+    if (this.disposed || this.dismissed || this.d.blocked?.(this.state.delivery ?? 'reply') || (!this.d.enabled() && !this.state.composer)) return false;
     this.visible = true;
     const win = this.ensure(); this.reposition(); this.send();
     // showInactive keeps asides quiet; a real click can activate their reply/settings buttons.
@@ -151,12 +155,36 @@ export class BuddyBubble {
     if(this.previous.length&&!this.hoveredAt){const next=Math.min(...this.previous.map(x=>x.expires>this.clock()?x.expires:x.expires+220));this.stackTimer=setTimeout(()=>{this.syncStack();this.send();},Math.max(1,next-this.clock()));this.stackTimer.unref?.();}
   }
   hide() { this.visible = false;this.hoveredAt=0;this.state.fading=false; this.previous=[];this.syncStack(); if (this.window && !this.window.isDestroyed()) conceal(this.window); }
-  dismiss() { this.dismissed = true; this.state.composer = false; this.hide(); }
+  dismiss() { if(this.id)this.dismissedIds.add(this.id); this.dismissed = true; this.state.composer = false; this.hide(); }
   begin() { this.state.speech=undefined; this.archive();this.id = ''; this.state.text = ''; this.state.delivery = 'reply'; this.state.startedAt = Date.now(); this.dismissed = false; if (this.timer) clearTimeout(this.timer); }
   phase(p: AssistantPhase) { if (p === 'thinking' && !this.state.startedAt) this.state.startedAt = Date.now(); this.state.phase = p; if (p === 'thinking' || p === 'listening' || p === 'transcribing') this.show(); else this.send(); }
-  delta(id: string, text: string) { this.state.speech={kind:'generated-direct'}; if (this.id !== id) { this.archive();this.id = id; this.state.text = ''; } this.state.text = (this.state.text + text).slice(-20000); this.show(); }
-  done(message: ChatMessage) { this.state.speech=message.meta?.speech; if(this.id!==message.id)this.archive();this.id = message.id; this.state.delivery = 'reply'; this.state.text = this.d.filterText?.(message.content) ?? message.content; this.state.phase = message.meta?.error ? 'error' : 'idle'; this.state.startedAt = undefined; const shown = !!this.state.text && this.show(); this.expire(); return shown; }
-  remark(text: string,speech?:import('../core/performance').SpeechOrigin) { this.state.speech=speech; text = this.d.filterText?.(text) ?? text; if (this.state.composer || !text.trim()) return false; this.archive();this.id='';this.dismissed = false; this.state.delivery = 'aside'; this.state.startedAt = undefined; this.state.text = text; this.state.phase = 'idle'; const shown = this.show(); this.expire(); return shown; }
+  private admit(id: string, delivery: 'aside' | 'reply') {
+    const suppressedBy = this.disposed ? 'disposed' : this.dismissedIds.has(id) ? 'dismissed'
+      : this.d.blocked?.(delivery) || (delivery === 'aside' && this.state.composer ? 'composer-active'
+        : !this.d.enabled() && !this.state.composer ? 'bubbles-disabled' : null);
+    this.lastPresentation = { accepted: !suppressedBy, suppressedBy };
+    return !suppressedBy;
+  }
+  delta(id: string, text: string, delivery: 'aside' | 'reply' = 'reply') {
+    if(!this.admit(id,delivery))return false;
+    if(this.id!==id){this.archive();this.id=id;this.state.text='';this.dismissed=false;}
+    this.state.delivery=delivery;this.state.speech={kind:delivery==='aside'?'generated-spontaneous':'generated-direct'};
+    this.state.text=(this.state.text+text).slice(-20000);
+    const shown=!!this.state.text&&this.show();
+    this.lastPresentation={accepted:shown,suppressedBy:shown?null:'no-text'};return shown;
+  }
+  done(message: ChatMessage, delivery: 'aside' | 'reply' = 'reply') {
+    if(!this.admit(message.id,delivery))return false;
+    if(this.id!==message.id){this.archive();this.dismissed=false;}
+    this.id=message.id;this.state.delivery=delivery;
+    this.state.speech=message.meta?.speech??{kind:delivery==='aside'?'generated-spontaneous':'generated-direct'};
+    this.state.text=this.d.filterText?.(message.content)??message.content;this.state.phase=message.meta?.error?'error':'idle';this.state.startedAt=undefined;
+    const shown=!!this.state.text&&this.show();this.lastPresentation={accepted:shown,suppressedBy:shown?null:'no-text'};this.expire();return shown;
+  }
+  remark(text: string,speech?:import('../core/performance').SpeechOrigin) {
+    if(!text.trim()){this.lastPresentation={accepted:false,suppressedBy:'no-text'};return false;}
+    return this.done({id:`remark-${++this.serial}`,role:'assistant',content:text,ts:Date.now(),meta:{speech}},'aside');
+  }
   resize(height: number) {
     if (!this.window || this.window.isDestroyed()) return;
     const h = Math.min(this.state.maxHeight??1200, Math.max(76, Math.ceil(height / 2) * 2));

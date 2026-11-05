@@ -674,7 +674,7 @@ async function init() {
     if (life.ledger.view().sources.some(s => s.permissions.collect && (s.permissions.live || (s.permissions.proactive ?? s.permissions.live)))) behavior.clear();
     cognitiveStore.save('legacy-behavior-provenance-reset', true);
   }
-  bubble = new BuddyBubble({ filterText: text => retiredLines.filterGenerated(text), anchor: () => charWin && !charWin.isDestroyed() ? charWin.getBounds() : null, head: () => characterHead, body: () => characterBody, inverted: () => !!perchHandle && perchMode === 'inverted', enabled: () => settings.get().character.speechBubbles && !opening?.active && !userHidden && !fullscreenHidden, preload: preloadPath(), log });
+  bubble = new BuddyBubble({ filterText: text => retiredLines.filterGenerated(text), anchor: () => charWin && !charWin.isDestroyed() ? charWin.getBounds() : null, head: () => characterHead, body: () => characterBody, inverted: () => !!perchHandle && perchMode === 'inverted', enabled: () => settings.get().character.speechBubbles && !opening?.active, blocked: delivery => userHidden || fullscreenHidden ? 'hidden' : delivery === 'aside' && (agency?.quiet() || settings.get().behavior.mode === 'sleep' || !mayInterrupt(settings.get(), { fullscreen: fullscreenHidden, hidden: userHidden })) ? 'sleep-or-quiet' : null, preload: preloadPath(), log });
   loadWin32(log);
   devGeminiKey = TEST && process.env.CAPRI_NO_DEV_KEY === '1' ? undefined : loadDevKey();
   wake = new WakeWordListener(log);
@@ -706,7 +706,7 @@ async function init() {
       capture: async (handle, signal) => { signal.throwIfAborted(); return captureWindowObservation(BigInt(handle)); },
       react: async (emotion, signal) => {
         signal.throwIfAborted();
-        if (!runtime2Allowed('move') || !charWin || charWin.isDestroyed()) return { ok: false, detail: 'Character expression unavailable or denied.' };
+        if (!runtime2Allowed('expression') || !charWin || charWin.isDestroyed()) return { ok: false, detail: 'Character expression unavailable or denied.' };
         physicalReaction={id:++physicalReactionSequence,emotion,status:'dispatched'};
         cue({ type: 'clip', name: emotion, performanceId:physicalReaction.id });
         return { ok: true, detail: 'Expression dispatched to character renderer; physical completion unconfirmed.' };
@@ -1277,9 +1277,21 @@ function toPanel(channel: string, payload: unknown) {
   if (developerWin && !developerWin.isDestroyed()) developerWin.webContents.send(channel, payload);
   if (!bubble) return;
   if (channel === 'chat:message' && (payload as { message: ChatMessage }).message.role === 'user') bubble.begin();
-  else if (channel === 'chat:phase') bubble.phase((payload as { phase: AssistantPhase }).phase);
-  else if (channel === 'chat:delta') { const p = payload as { messageId: string; delta: string }; bubble.delta(p.messageId, p.delta); }
-  else if (channel === 'chat:done') { const m = (payload as { message: ChatMessage }).message; bubble.done(m); if (m.content && !m.meta?.error && !m.meta?.interrupted && !settings.get().voice.ttsEnabled) cue({ type: 'textTalk', text: m.content }); }
+  else if (channel === 'chat:phase') {
+    const p = payload as { phase: AssistantPhase; delivery?: 'aside' | 'reply' };
+    // Ambient thinking must not reveal an old reply or interrupt an open composer.
+    if(p.delivery !== 'aside')bubble.phase(p.phase);
+  }
+  else if (channel === 'chat:delta' || channel === 'chat:done') {
+    const p = payload as { messageId: string; delta: string; message: ChatMessage; delivery?: 'aside' | 'reply' };
+    const delivery=p.delivery??'reply', id=channel==='chat:delta'?p.messageId:p.message.id;
+    const accepted=channel==='chat:delta'?bubble.delta(id,p.delta,delivery):bubble.done(p.message,delivery);
+    if(experimental)runtime2Daily?.recorder.event('presentation.dispatch', {
+      responseId:id, delivery, stage:channel==='chat:delta'?'delta':'done', target:'buddy-bubble',
+      ...bubble.lastPresentation, outcome:accepted?'accepted-for-display':'suppressed',
+    });
+    if(channel==='chat:done'&&accepted&&p.message.content&&!p.message.meta?.error&&!p.message.meta?.interrupted&&!settings.get().voice.ttsEnabled)cue({type:'textTalk',text:p.message.content});
+  }
 }
 function cue(c: CharacterCue) {
   if (c.type === 'stopSpeech' || c.type === 'pause' && c.paused) pendingSpokenRemarks.clear();
@@ -2864,11 +2876,11 @@ function visibleObservationWindows(now=Date.now()) {
   return observationWindowsCache;
 }
 /** Shared host restrictions apply both before admission and throughout native travel. */
-function physicalBlocked(): string | null {
+function physicalBlocked(effect: 'move' | 'expression' = 'move'): string | null {
   const s=settings.get();
   return quitting||suspended||activityLocked ? 'Desktop unavailable' : !charWin||charWin.isDestroyed() ? 'Character unavailable'
-    : s.actions.policies.teleport!=='allow' ? 'Movement permission denied' : drag?.active ? 'User is carrying Capri'
-    : perchPinned ? 'User-pinned position' : throwTimer||fallTimer||perchMoving ? 'Physical recovery has priority'
+    : effect==='move'&&s.actions.policies.teleport!=='allow' ? 'Movement permission denied' : drag?.active ? 'User is carrying Capri'
+    : effect==='move'&&perchPinned ? 'User-pinned position' : throwTimer||fallTimer||perchMoving ? 'Physical recovery has priority'
     : userHidden||fullscreenHidden||gameActive() ? 'Hidden, fullscreen or gaming restriction'
     : s.behavior.mode==='sleep'||s.behavior.doNotDisturb||!mayInterrupt(s,{fullscreen:fullscreenHidden,hidden:userHidden}) ? 'Sleep or quiet mode'
     : company.blocked()||company.focused()||company.staying||agency?.movementHeld() ? 'User stay or focus commitment'
@@ -2925,7 +2937,7 @@ async function executePhysicalIntent(intent: PhysicalIntent, signal: AbortSignal
 function runtime2Allowed(operation: Parameters<DesktopHost['allowed']>[0], observation?: RuntimeObservation, mode: DisclosureMode = 'direct') {
   const s = settings.get();
   if (quitting || suspended || activityLocked) return false;
-  if (operation === 'move') return !physicalBlocked();
+  if (operation === 'move' || operation === 'expression') return !physicalBlocked(operation);
   if (operation === 'conversation') return s.privacy.saveHistory;
   if (operation === 'state') return s.memory.enabled && s.privacy.saveHistory;
   if (!observation && operation === 'disclose') return s.privacy.saveHistory && (mode === 'direct' || s.behavior.mode !== 'sleep' && !s.behavior.doNotDisturb);
@@ -2948,7 +2960,7 @@ function presenceTick() {
   if (experimental) {
     sendSurface();
     updateAttention();
-    cue({type:'presence',idleSec:systemIdleSec(),quiet:!!physicalBlocked()});
+    cue({type:'presence',idleSec:systemIdleSec(),quiet:!!physicalBlocked('expression')});
     void physicalBehavior?.tick().catch(error => log.debug('Local physical behavior unavailable',{error}));
     if (!TEST && runtime2?.collecting && runtime2Allowed('collect') && settings.get().dialogue.spotifyBanter) musicWatcher.start(); else musicWatcher.stop();
     if (runtime2Daily) { const state = `${runtime2Daily.paused}:${runtime2Daily.recorder.status.active}`; if (state !== runtime2DailyTrayState) { runtime2DailyTrayState = state; updateTrayMenu(); } }

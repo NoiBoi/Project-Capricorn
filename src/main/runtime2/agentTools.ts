@@ -61,7 +61,7 @@ export function agentTool(archive: WindowFocusArchive, services: AgentServices, 
     parse(value) { if (!parser) throw Error('Unknown agent tool'); return parser.parse(value); },
     permission: () => {
       if (!host) return ['investigate','find_memories','write_memory','set_attention'].includes(name) ? 'allow' : 'deny';
-      return host.allowed(name === 'move' || name === 'react' ? 'move' : ['investigate','write_memory','find_memories'].includes(name) ? 'state' : 'disclose', undefined, services.mode) ? 'allow' : 'deny';
+      return host.allowed(name === 'move' ? 'move' : name === 'react' ? 'expression' : ['investigate','write_memory','find_memories'].includes(name) ? 'state' : 'disclose', undefined, services.mode) ? 'allow' : 'deny';
     },
     precondition: () => true,
     async execute(value, signal) {

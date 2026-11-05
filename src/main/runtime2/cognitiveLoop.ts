@@ -156,7 +156,7 @@ export class CognitiveLoop {
   }
   private get interval() { return this.options.daily?.config.ambientMs ?? this.options.ambientMs ?? 30_000; }
   private emit(channel: string, payload: unknown) { if (!this.closed) { try { this.options.emit?.(channel, payload); } catch { /* Presentation cannot interrupt durable chronology. */ } } }
-  private phase(phase: AssistantPhase, detail?: string) { if (this.closed) return; this.phaseValue = phase; this.emit('chat:phase', { phase, detail }); }
+  private phase(phase: AssistantPhase, detail?: string) { if (this.closed) return; this.phaseValue = phase; this.emit('chat:phase', { phase, detail, delivery: this.ambientInFlight ? 'aside' : 'reply' }); }
   get host() { return this.options.host; }
   get state() { return { phase: this.phaseValue, busy: !!this.running, inferences: structuredClone(this.inferenceReceipts) }; }
   get id() { return this.conversationId; }
@@ -426,7 +426,7 @@ export class CognitiveLoop {
           const requestStarted = Date.now();
           const result = await this.provider.infer(model, input, signal, delta => {
             if (this.closed || signal.aborted) return;
-            partial += delta; this.emit('chat:delta', { messageId: responseId, delta });
+            partial += delta; this.emit('chat:delta', { messageId: responseId, delta, delivery: ambient ? 'aside' : 'reply' });
           });
           signal.throwIfAborted();
           this.perception?.acknowledgeImages(input.images ?? []);
@@ -453,7 +453,7 @@ export class CognitiveLoop {
           if (result.text) {
             recorder?.event('dialogue', { text: result.text, ambient, responseId }, { cycleId, requestId: networkId });
             if (!result.calls.length) await this.save({ id: responseId, at: Date.now(), kind: 'assistant', text: result.text, inference: { model: model.id, requestId: result.requestId, usage: result.usage } });
-            this.emit('chat:done', { message: { id: responseId, role: 'assistant', content: result.text, ts: Date.now(), meta: { provider: 'siwc' } } });
+            this.emit('chat:done', { message: { id: responseId, role: 'assistant', content: result.text, ts: Date.now(), meta: { provider: 'siwc' } }, delivery: ambient ? 'aside' : 'reply' });
             if (!result.calls.length) this.emit('runtime2:speak', { id: responseId, text: result.text, ambient });
           }
           partial = '';
@@ -543,7 +543,7 @@ export class CognitiveLoop {
         const failure = error as { code?: string; status?: number };
         const outcome = signal.aborted ? 'canceled' : failure?.code === 'response_incomplete' || failure?.code === 'stream_interrupted' ? 'incomplete' : failure?.code === 'invalid_stream' || failure?.code === 'invalid_tool_call' ? 'adapter-failure' : error instanceof Error && error.message === 'Tool round limit reached.' ? 'tool-budget-exhaustion' : 'failure';
         recorder?.event('provider.error', { outcome, code: failure?.code, status: failure?.status, detail: safeFailure(error), durationMs: Date.now() - cycleStarted }, { cycleId });
-        if (!this.closed && partial) this.emit('chat:done', { message: { id: responseId, role: 'assistant', content: partial, ts: Date.now(), meta: { provider: 'siwc', interrupted: true } } });
+        if (!this.closed && partial) this.emit('chat:done', { message: { id: responseId, role: 'assistant', content: partial, ts: Date.now(), meta: { provider: 'siwc', interrupted: true } }, delivery: ambient ? 'aside' : 'reply' });
         if (!this.closed) {
           this.notifyObservation();
           this.previousCompletion = 'failure';

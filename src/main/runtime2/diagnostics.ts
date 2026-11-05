@@ -25,6 +25,7 @@ export function cognitiveEfficiency(events: DiagnosticEvent[]) {
     tokensPerRecordedHour: durationHours > 0 ? Math.round((sum('inputTokens') + sum('outputTokens')) / durationHours) : null,
     activeHours: null, activeHourPolicy: 'Score attended active duration separately; inactivity does not prove user absence.',
     spontaneousDialogueCandidates: events.filter(e => e.type === 'dialogue' && e.data.ambient).length,
+    bubblePresentations: events.filter(e => e.type === 'presentation.dispatch').map(e => ({ responseId: e.data.responseId, delivery: e.data.delivery, stage: e.data.stage, accepted: e.data.accepted, suppressedBy: e.data.suppressedBy })),
     speechDispatches: events.filter(e => e.type === 'speech.dispatch').map(e => ({ accepted: e.data.accepted, outcome: e.data.outcome })),
     speechCompleted: events.filter(e => e.type === 'speech.end').length,
     executedMovement: tools.filter(e => e.data.name === 'move' && e.data.execution.receipt.outcome === 'completed').length,
