@@ -70,7 +70,9 @@ it('records exact HTTP context, streamed calls, failed capture, persisted memory
   expect(recorded.some(e => e.type === 'provider.stream' && e.data.type === 'response.output_item.done')).toBe(true);
   expect(recorded.some(e => e.type === 'provider.result' && e.data.outcome === 'silent')).toBe(true);
   expect(recorded.find(e => e.type === 'provider.result').data.usage.cachedInputTokens).toBe(10);
-  expect(recorded.filter(e => e.type === 'context.metrics')).toHaveLength(3);
+  expect(recorded.filter(e => e.type === 'context.selection')).toHaveLength(3);
+  expect(recorded.filter(e => e.type === 'provider.request').map(e => e.data.wireUtf8Bytes))
+    .toEqual(wire.map(body => Buffer.byteLength(JSON.stringify(body))));
   expect(wire[0].instructions).toBe(wire[1].instructions);
   expect(wire[0].tools[0].tools.find((tool: any) => tool.name === 'set_attention').parameters.type).toBe('object');
   expect(wire[0].input.some((item: any) => item.role === 'user' && JSON.parse(item.content).type === 'host_working_state')).toBe(true);

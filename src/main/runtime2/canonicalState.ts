@@ -2,13 +2,15 @@ import { z } from 'zod';
 
 const reference = z.string().min(1).max(256);
 export const StateInput = z.object({
-  id: reference,
+  id: reference.describe('For kind checkpoint, use exactly working-checkpoint.'),
   kind: z.enum(['semantic', 'episodic', 'user-fact', 'interest', 'investigation', 'intention', 'checkpoint']),
   text: z.string().min(1).max(4000),
-  provenance: z.enum(['host-observation', 'user-statement', 'model-interpretation']),
+  provenance: z.enum(['host-observation', 'user-statement', 'model-interpretation']).describe('Checkpoint wording always uses model-interpretation.'),
   evidence: z.array(reference).max(16),
   status: z.enum(['active', 'retired', 'completed', 'abandoned']),
   dueAt: z.number().finite().nonnegative().nullable(),
+  episodeId: z.number().int().positive().optional().describe('Link a checkpoint or investigation to a factual activity episode.'),
+  expiresAt: z.number().finite().nonnegative().optional().describe('Absolute expiry time for a working checkpoint.'),
   pinned: z.boolean().optional().describe('Keep a foundational active memory in rolling context. Maximum six pinned records.'),
   expectedRevision: z.number().int().nonnegative(),
 }).strict().refine(value => value.kind !== 'checkpoint' ||

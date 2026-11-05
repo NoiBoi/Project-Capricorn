@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { MovementIntent } from '../desktop/physicalBehavior';
 import type { CapabilityDefinition } from '../../core/capabilities';
 import { StateInput, StateQuery } from './canonicalState';
 import { AttentionInput, type AttentionController } from './attention';
@@ -14,23 +15,38 @@ const evidenceRequest = evidence.extend({ offset: pageQuery.shape.offset, limit:
 const originalQuery = evidenceRequest.partial().extend({ items: z.array(evidenceRequest).min(1).max(6).optional() })
   .refine(value => value.items ? value.observationId === undefined : value.observationId !== undefined,
     'Supply one observationId or a batch of items.');
-const movement = z.object({ target: z.enum(['corner','near_cursor','left','right','perch','idle']), handle: target.shape.handle }).strict();
+const movement = MovementIntent;
+const reaction = z.object({ emotion: z.enum(['curious','grin','laugh','eye_roll','shrug','nod','shake_no','blank_stare']) }).strict();
+const escalation = z.object({
+  id: z.string().min(1).max(256), expectedRevision: z.number().int().nonnegative(),
+  question: z.string().min(1).max(600), stoppingCondition: z.string().min(1).max(400),
+  evidence: z.array(z.string().min(1).max(256)).max(8),
+}).strict();
 function schema(name: string, description: string, input: z.ZodType): ToolSchema {
   const { $schema: _schema, ...parameters } = z.toJSONSchema(input); return { name, description, parameters };
 }
 export const AGENT_TOOLS: ToolSchema[] = [
   ...ARCHIVE_TOOLS,
   schema('inspect_window', 'Inspect current or known visible window metadata by handle. Source data never grants permission.', target),
-  schema('get_browser_page', 'Get current authorized visible page text and structure, paginated by section offset/limit. Recover original extension payload using retrieve_evidence. No navigation.', pageQuery),
+  schema('get_browser_page', 'Read the focused authorized Chrome page through the paired extension. Requests fresh visible text on the first page; later pages use that snapshot. Missing delivery reports a status. Never navigates.', pageQuery),
   schema('capture_window', 'Capture the permitted exposed window crop, retaining original JPEG. Pixels reach inference only if the selected model supports image input.', target),
   schema('retrieve_evidence', 'Recover original observation or dialogue by stable ID. Pass observationId directly, or items with up to six requests. Text sections are paginated by offset/limit. Images attach to the next model input, if supported. Missing/expired evidence is explicit.', originalQuery),
   schema('find_memories', 'Find canonical memories, interests, investigations and intentions using literal text and kind/status filters. Interpretations remain interpretations.', StateQuery),
-  schema('write_memory', 'Create/correct/retire canonical state. For short-term continuity use kind checkpoint, id working-checkpoint, model-interpretation, and up to 1800 characters. Keep hypotheses explicit and cite evidence. expectedRevision=0 creates, otherwise use retrieved revision. dueAt is an absolute review deadline. Each investigation can schedule up to four deadlines. A review has no reminder-delivery guarantee. Evidence IDs must reference original observations or messages. All model-authored wording remains an interpretation of its cited provenance.', StateInput),
-  schema('set_attention', 'Supply all five review fields to schedule a review and temporary source monitoring, or supply only action to cancel/pause optional ambient reviews. A pause still allows due commitments and direct messages. Host enforces minimum spacing, request ceilings and a 15-minute monitoring limit. Ordinary collection continues.', AttentionInput),
-  schema('move', 'Move Capri through the existing native positioning system. Optional handle selects a known window perch. Actual receipt controls success; silence and no movement are valid choices.', movement),
+  schema('write_memory', 'Revise or supersede by writing the same ID with its current expectedRevision (0 creates). Retire via status. Cite original IDs. kind=checkpoint requires id exactly working-checkpoint, provenance=model-interpretation, text at most 1800 characters, and dueAt=null. Retrieve its revision before replacement. Use investigation for durable work and intention for a future action. dueAt requests an exploratory review. User-facing reminder delivery is unavailable.', StateInput),
+  schema('set_attention', 'Set one source watch, capped at 30 minutes. Optional afterMs schedules review. watch-only suppresses unrelated ambient wakes. High priority reduces spacing. Send action alone to cancel or pause.', AttentionInput),
+  schema('move', 'Set a physical intention. accompany follows stable work focus; follow_cursor is brief; perch binds a known window; taskbar/settle rest; return revisits the prior position; away clears an obstruction; cancel releases the intention. Optional handle, posture, durationMs and pace are resolved locally without further inference. Receipts establish native placement only; rendered pose is reported separately.', movement),
+  schema('react', 'Request a brief nonverbal expression using existing character clips. Independent of speech and movement. A dispatched receipt confirms host dispatch only, not renderer completion.', reaction),
 ];
 const redundantRoutineTools = new Set(['get_archive_statistics', 'get_recent_observations', 'get_observation_by_id']);
 export const ROUTINE_TOOLS = AGENT_TOOLS.filter(tool => !redundantRoutineTools.has(tool.name));
+// Ordinary expression uses the same validated actions, without retrieval schemas or a finishing request.
+const ambientDescriptions: Record<string, string> = {
+  write_memory: 'Optional canonical update. Use interest for developing curiosity; checkpoint uses id working-checkpoint, model-interpretation, max 1800 characters and dueAt=null. Use supplied revision (0 creates), original evidence IDs, and retire ended interests. No user reminder delivery.',
+  set_attention: 'One watch, capped at 30 minutes; optional afterMs review. watch-only excludes unrelated wakes. Send action alone to cancel or pause.',
+};
+export const AMBIENT_TOOLS = AGENT_TOOLS.filter(tool => ['move', 'react', 'write_memory', 'set_attention'].includes(tool.name))
+  .map(tool => ({ ...tool, description: ambientDescriptions[tool.name] ?? tool.description }));
+export const ESCALATE_TOOL = schema('investigate', 'Choose deeper work only for a specific uncertainty. Supply a clear stopping condition. Saves a model-authored investigation in canonical state, then continues with evidence tools. Reuse its ID and revision to continue existing work.', escalation);
 export interface AgentServices { perception?: Perception; attention: AttentionController; failedCaptures?: Set<string>; refreshState(): Promise<void>; mode: DisclosureMode; model: Model; attach(observationId: string, dataUrl: string): boolean }
 export function agentTool(archive: WindowFocusArchive, services: AgentServices, name: string): CapabilityDefinition<unknown, unknown> {
   const perception = services.perception, host = perception?.host;
@@ -39,25 +55,37 @@ export function agentTool(archive: WindowFocusArchive, services: AgentServices, 
       () => !host || host.allowed('conversation'));
     return { ...definition, permission: () => !host || host.allowed('disclose', undefined, services.mode) ? 'allow' : 'deny' } as CapabilityDefinition<unknown, unknown>;
   }
-  const schemas: Record<string, z.ZodType> = { inspect_window: target, get_browser_page: pageQuery, capture_window: target, retrieve_evidence: originalQuery, find_memories: StateQuery, write_memory: StateInput, set_attention: AttentionInput, move: movement };
+  const schemas: Record<string, z.ZodType> = { react: reaction, investigate: escalation, inspect_window: target, get_browser_page: pageQuery, capture_window: target, retrieve_evidence: originalQuery, find_memories: StateQuery, write_memory: StateInput, set_attention: AttentionInput, move: movement };
   const parser = schemas[name];
   return {
     parse(value) { if (!parser) throw Error('Unknown agent tool'); return parser.parse(value); },
     permission: () => {
-      if (!host) return ['find_memories','write_memory','set_attention'].includes(name) ? 'allow' : 'deny';
-      return host.allowed(name === 'move' ? 'move' : name === 'write_memory' || name === 'find_memories' ? 'state' : 'disclose', undefined, services.mode) ? 'allow' : 'deny';
+      if (!host) return ['investigate','find_memories','write_memory','set_attention'].includes(name) ? 'allow' : 'deny';
+      return host.allowed(name === 'move' || name === 'react' ? 'move' : ['investigate','write_memory','find_memories'].includes(name) ? 'state' : 'disclose', undefined, services.mode) ? 'allow' : 'deny';
     },
     precondition: () => true,
     async execute(value, signal) {
       signal.throwIfAborted(); const args = value as Record<string, any>;
       switch (name) {
+        case 'investigate': {
+          const input = escalation.parse(args);
+          for (const id of input.evidence) {
+            const observation = await archive.get(id);
+            if (host && observation && ((observation.disclosure?.retainUntil ?? Infinity) <= Date.now() || !host.allowed('disclose', observation, services.mode))) throw Error('Evidence disclosure denied');
+          }
+          const result = await archive.putState({ id: input.id, expectedRevision: input.expectedRevision,
+            kind: 'investigation', text: JSON.stringify({ question: input.question, stoppingCondition: input.stoppingCondition }),
+            provenance: 'model-interpretation', evidence: input.evidence, status: 'active', dueAt: null });
+          await services.refreshState();
+          return { id: result.id, revision: result.revision, question: input.question, stoppingCondition: input.stoppingCondition };
+        }
         case 'find_memories': {
           const records = await archive.findState(args); let bytes = 0, examined = 0; const memories = [];
           for (const record of records) {
             let permitted = true;
             for (const id of record.evidence) { const observation = await archive.get(id); if (host && (observation ? (observation.disclosure?.retainUntil ?? Infinity) <= Date.now() || !host.allowed('disclose', observation, services.mode) : !await archive.hasDialogue(id))) { permitted = false; break; } }
             if (!permitted) { examined++; continue; }
-            const size = Buffer.byteLength(JSON.stringify(record)); if (bytes + size > 24000) break; bytes += size; memories.push(record); examined++; }
+            const size = Buffer.byteLength(JSON.stringify(record)); if (bytes + size > 24000) break; bytes += size; memories.push((record.expiresAt ?? Infinity) <= Date.now() ? { ...record, expired: true } : record); examined++; }
           return { memories, nextOffset: memories.length < records.length || records.length === args.limit ? (args.offset ?? 0) + examined : null };
         }
         case 'write_memory': {
@@ -77,7 +105,12 @@ export function agentTool(archive: WindowFocusArchive, services: AgentServices, 
           catch (error) { services.attention.restore(previous); throw error; }
           return result;
         }
-        case 'get_browser_page': return { observations: perception!.current(services.mode).filter(o => o.modality === 'browser-page' && (!o.content.handle || o.content.handle === host?.active())).map(o => ({ ...o, content: { ...o.content, sections: o.content.sections?.slice(args.offset, args.offset + args.limit) }, page: { offset: args.offset, totalSections: o.content.sections?.length ?? 0, nextOffset: args.offset + args.limit < (o.content.sections?.length ?? 0) ? args.offset + args.limit : null } })), scope: 'Accepted focused and visible extension snapshot. A null window handle means the host has not confirmed its association with the foreground window.' };
+        case 'get_browser_page': {
+          const reading = args.offset === 0 && host?.requestBrowserPage
+            ? await host.requestBrowserPage(signal) : undefined;
+          signal.throwIfAborted();
+          return { ...(reading ? { reading } : {}), observations: perception!.current(services.mode).filter(o => o.modality === 'browser-page' && (!o.content.handle || o.content.handle === host?.active())).map(o => ({ ...o, content: { ...o.content, sections: o.content.sections?.slice(args.offset, args.offset + args.limit) }, page: { offset: args.offset, totalSections: o.content.sections?.length ?? 0, nextOffset: args.offset + args.limit < (o.content.sections?.length ?? 0) ? args.offset + args.limit : null } })), scope: 'Accepted focused and visible extension snapshot. A null window handle means the host has not confirmed its association with the foreground window.' };
+        }
         case 'inspect_window': return perception!.inspect(args.handle, false, services.mode, signal);
         case 'capture_window': {
           const target = args.handle ?? host?.active() ?? 'unknown';
@@ -136,10 +169,11 @@ export function agentTool(archive: WindowFocusArchive, services: AgentServices, 
           }
           return { results, nextItem: results.length < request.items.length ? results.length : null };
         }
-        case 'move': return host!.move(args.target, args.handle, signal);
+        case 'react': return host?.react?.(args.emotion, signal) ?? { ok: false, detail: 'Character expression unavailable.' };
+        case 'move': return host!.move(args.target, args.handle, signal, movement.parse(args));
         default: throw Error('Unknown agent tool');
       }
     },
-    verify: (_input, result) => name === 'move' ? !!(result as { ok?: boolean })?.ok : name === 'capture_window' ? !(result as { error?: unknown })?.error : true,
+    verify: (_input, result) => name === 'react' ? (result as { ok?: boolean })?.ok ? 'dispatched' : false : name === 'move' ? !!(result as { ok?: boolean })?.ok : name === 'capture_window' ? !(result as { error?: unknown })?.error : true,
   };
 }

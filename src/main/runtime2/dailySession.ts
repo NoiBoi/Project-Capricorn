@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
@@ -86,7 +87,13 @@ export class DailySession {
       try { fs.writeFileSync(fd, JSON.stringify({ times: this.times })); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
       fs.renameSync(this.ledger + '.tmp', this.ledger);
     } catch { this.pausedValue = true; this.ledgerError = 'Usage ledger write failed; no new inference was sent.'; throw Error(this.ledgerError); }
-    this.recorder.event('provider.request', { number: this.requests }, { cycleId: this.requestCycle, requestId: this.requestId });
+    const wire = body as { model?: string; instructions?: string; tools?: unknown } | null;
+    const instructionToolFingerprint = createHash('sha256')
+      .update(JSON.stringify([wire?.model, wire?.instructions, wire?.tools])).digest('hex');
+    this.recorder.event('provider.request', {
+      number: this.requests, wireUtf8Bytes: Buffer.byteLength(JSON.stringify(body)), instructionToolFingerprint,
+      ...requestTextMeasure(body),
+    }, { cycleId: this.requestCycle, requestId: this.requestId });
     this.recorder.request(this.requestId!, 'wire-' + this.requests, body, this.requestCycle);
   }
   protocol(event: unknown) { this.recorder.event('provider.stream', event, { cycleId: this.requestCycle, requestId: this.requestId }); }
@@ -94,4 +101,15 @@ export class DailySession {
     if (usage) { this.inputTokens += usage.inputTokens; this.outputTokens += usage.outputTokens; this.missingUsage = Math.max(0, this.missingUsage - 1); }
     void this.recorder.checkpoint(this.status.usage).catch(() => {});
   }
+}
+
+/** Measure effective serialized input; image tokens are never estimated from base64 length. */
+export function requestTextMeasure(body: unknown) {
+  let images = 0;
+  const textOnly = JSON.stringify(body, (key, value) => {
+    if (key === 'image_url') { images++; return '[image omitted from text estimate]'; }
+    return value;
+  });
+  const textUtf8Bytes = Buffer.byteLength(textOnly);
+  return { textUtf8Bytes, approximateTextTokens: Math.ceil(textUtf8Bytes / 4), approximation: 'UTF-8 bytes/4, not a provider tokenizer', attachedImages: images, imageTokens: images ? null : 0 };
 }

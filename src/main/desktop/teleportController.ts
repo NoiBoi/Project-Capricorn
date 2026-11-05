@@ -93,6 +93,7 @@ export class TeleportController {
       const arrival = this.waitAck(id, 'in', fx ? 1800 : 400);
       this.d.cue({ type: 'teleport', phase: 'in', id, effects: fx, animation });
       await arrival;
+      if (revision !== this.revision || cancelled?.()) return false;
       if (target) this.d.arrived?.(target, 'direct');
       return !!target;
     } finally { this.busy = false; }
@@ -195,6 +196,7 @@ export class TeleportController {
       const arrival = this.waitAck(id, 'in', fx ? 1800 : 400);
       this.d.cue({ type: 'teleport', phase: 'in', id, effects: fx });
       const inOk = await arrival;
+      if (revision !== this.revision) return {ok:false,detail:'Movement cancelled during arrival; native position may have changed.',to:dest};
       this.d.arrived?.(dest, reason);
       this.count++;
       this.last = `${new Date().toLocaleTimeString()} (${reason}, ${target}) → ${dest.x},${dest.y}`;

@@ -198,7 +198,7 @@ function tick(dt: number) {
   }
   model.hitOverride = deepSleep.amount > .8 ? (x,y) => deepSleep.hit(x,y,W,H) : undefined;
   if(directedAnimation){if(directedAnimation.clip.done)finishDirectedAnimation('completed');else if(behavior.clip!==directedAnimation.clip||dragging||teleporting)finishDirectedAnimation('interrupted');}
-  const rendererState = { ...model.secondaryRendererState, mood: devPreview?.mood ?? mood, clip: model.activeClip, phase: devPreview?.phase ?? phase, attachment: devPreview ? devPreview.attachment ?? null : attachment }, rendererKey = JSON.stringify(rendererState);
+  const rendererState = { ...model.secondaryRendererState, posture:behavior.posture, primaryPose:modelPose(), mood: devPreview?.mood ?? mood, clip: model.activeClip, phase: devPreview?.phase ?? phase, attachment: devPreview ? devPreview.attachment ?? null : attachment }, rendererKey = JSON.stringify(rendererState);
   if (rendererKey !== lastRendererState) { lastRendererState = rendererKey; void api.invoke('char:poseRenderer', rendererState); }
   const head = model.speechAnchor, now = performance.now(), bodyKey = JSON.stringify([model.speechBody,model.sceneHand]);
   if (now - anchorSentAt >= 100 && (Math.hypot(head.x - lastAnchor.x, head.y - lastAnchor.y) > .003 || bodyKey !== lastAnchorBody)) {
@@ -349,18 +349,23 @@ api.on('cue', (raw) => {
     case 'teleport': model.perform(null); statusFx.clear(); if (c.animation && c.effects) model.teleportAnimation(c.animation); onTeleport(c.phase, c.id, c.effects, !!c.animation); break;
     case 'attachment': attachment = c.mode; break;
     case 'clip': {
+      finishDirectedAnimation('interrupted');
       if (['laugh','maniac_grin','cheer'].includes(c.name) && settings.character.reactionCutins) statusFx.show(c.name === 'cheer' ? 'grin' : 'laugh');
       if (settings.character.theatricalMotion && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
         if (['cheer','proud'].includes(c.name)) model.perform('victory');
         if (['surprised','annoyed'].includes(c.name)) model.perform('flinch');
         if (['curious','thinking'].includes(c.name)) model.perform('curious');
       }
-      const spriteEmotes: Record<string, 'idle' | 'perch' | 'grin' | 'sleep' | 'glitch' | 'dangle'> = { sit: 'perch', curl_up: 'perch', stand: 'idle', grin: 'grin', laugh: 'grin', happy: 'grin', smug: 'grin', power_stance: 'glitch', menace: 'glitch', recline: 'sleep', yawn: 'sleep' };
+      const spriteEmotes: Record<string, 'idle' | 'perch' | 'grin' | 'sleep' | 'glitch' | 'dangle'> = { sit: 'perch', curl_up: 'perch', stand: 'idle', grin: 'grin', laugh: 'grin', happy: 'grin', smug: 'grin', power_stance: 'glitch', menace: 'glitch', yawn: 'sleep' };
       if (spriteEmotes[c.name]) model.requestAnimation(spriteEmotes[c.name], ['sit', 'stand', 'recline', 'curl_up'].includes(c.name) ? 20 : spriteEmotes[c.name] === 'glitch' ? 10 / 15 : 2);
       const e = EMOTE_MAP[c.name];
       if (e?.posture) behavior.setPosture(surface === 'air' && e.posture === 'sit_edge' ? 'air_sit' : e.posture);
       else if (e?.react) behavior.react(e.react);
       else if (e?.clip && clipByName(e.clip)) behavior.playClip(e.clip, 'reacting');
+      if(c.performanceId){
+        if(behavior.clip)directedAnimation={id:c.performanceId,clip:behavior.clip};
+        else void api.invoke('char:performance',{id:c.performanceId,status:'interrupted'});
+      }
       break;
     }
     case 'connection': break;

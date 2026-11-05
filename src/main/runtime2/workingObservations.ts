@@ -17,6 +17,7 @@ export function structuralChange(previous: Observation | undefined, observation:
 export function observationHash(o: Observation) {
   const { revision, changedSections, evidenceId, ...content } = o.content;
   if (o.modality === 'screenshot') return evidenceId ?? o.id;
+  if (o.modality === 'browser-page') content.handle = null;
   return createHash('sha256').update(JSON.stringify(content)).digest('hex');
 }
 
@@ -47,4 +48,36 @@ export function excerptObservation(record: ObservationRecord): ObservationRecord
   });
   return { ...record, observation: { ...o, content: { ...o.content, ...(o.content.text === undefined ? {} : { text: o.content.text.slice(0, 3000) }), ...(sections ? { sections } : {}) },
     loss: { truncated: true, missing: [...o.loss.missing, 'working-excerpt-retrieve-original-by-id'] } } };
+}
+
+export function observedText(o: Observation) {
+  return o.content.text || o.content.sections?.map(section => section.text).join('\n') || '';
+}
+
+/** A single bounded replacement span after removing shared edges. */
+export function changedTextSpan(before: string, after: string) {
+  let start = 0, suffix = 0;
+  const shared = Math.min(before.length, after.length);
+  while (start < shared && before[start] === after[start]) start++;
+  while (suffix < shared - start && before[before.length - suffix - 1] === after[after.length - suffix - 1]) suffix++;
+  return { start, beforeEnd: before.length - suffix, afterEnd: after.length - suffix };
+}
+
+export function contentDelta(before: Observation, after: Observation) {
+  if (before.id === after.id || before.at > after.at || observationSlot(before) !== observationSlot(after) ||
+      before.modality !== 'browser-page' || before.content.url !== after.content.url) return;
+  const oldText = observedText(before), newText = observedText(after);
+  if (!oldText || !newText || oldText === newText) return;
+  const { start, beforeEnd, afterEnd } = changedTextSpan(oldText, newText);
+  const excerptStart = Math.max(0, start - 48);
+  const side = (o: Observation, text: string, end: number) => {
+    const excerptEnd = Math.min(text.length, end + 48, excerptStart + 160);
+    return {
+      id: o.id, at: o.at, excerpt: text.slice(excerptStart, excerptEnd),
+      changeOffset: start - excerptStart, changedCodeUnits: end - start,
+      changedSpanTruncated: end > excerptEnd, excerptClipped: excerptStart > 0 || excerptEnd < text.length,
+      sourceTruncated: o.loss.truncated,
+    };
+  };
+  return { basis: 'retained visible text', before: side(before, oldText, beforeEnd), after: side(after, newText, afterEnd) };
 }

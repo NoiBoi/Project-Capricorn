@@ -89,6 +89,7 @@ export class Runtime2 {
     const stopped = this.cognitive?.quiesce(); this.cognitive?.perception?.clear(); this.conversation.items = [];
     const task = this.revocation.then(async () => {
       await stopped; await Promise.allSettled([...this.pendingSources]); await this.archive.forgetSource(source);
+      this.cognitive?.attention.restore({ paused: false });
       if (this.cognitive?.host && !this.cognitive.host.allowed('conversation')) await this.archive.clearConversation();
       await this.cognitive?.refreshState();
     });
@@ -112,9 +113,11 @@ export class Runtime2 {
   async stopDaily() { await this.pauseDaily(); await Promise.allSettled([...this.pendingSources]); await this.daily?.stop(); }
   async startDaily(metadata: Record<string, unknown>) {
     await this.pauseDaily(); await Promise.allSettled([...this.pendingSources]);
-    await this.daily?.start(metadata);
-    this.daily?.recorder.event('state.restored', { conversation: (await this.archive.conversation()).id, state: await this.archive.findState({ limit: 50 }), scope: '50 most recent state records; operations and working context record subsequent changes' });
+    const baseline = await this.cognitive?.diagnosticBaseline(process.env.CAPRI_V2_NORMAL_ATTENTION === '1');
+    await this.daily?.start({ ...metadata, baseline });
+    this.daily?.recorder.event('state.restored', { ...baseline, state: await this.archive.findState({ limit: 50 }), scope: '50 most recent state records; operations and working context record subsequent changes' });
     this.observationPaused = false; this.cognitive?.resumeAmbient();
+    return baseline;
   }
   stopChat() { this.cognitive?.stop(); }
   resumeChat() { this.cognitive?.resume(); }

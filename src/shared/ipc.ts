@@ -76,7 +76,7 @@ export type CharacterCue =
   | { type: 'teleport'; phase: 'out' | 'in'; id: number; effects: boolean; animation?: 'perch_glitch' }
   | { type: 'attachment'; mode: 'perch' | 'inverted' | 'moving' | null }
   | { type: 'dropHint'; edge: { x: number; y: number; width: number } | null }
-  | { type: 'clip'; name: string }
+  | { type: 'clip'; name: string; performanceId?: number }
   | { type: 'surface'; surface: 'taskbar' | 'window' | 'air' | 'edge_left' | 'edge_right' }
     | { type: 'poseSupport'; support: import('./secondaryBehavior').PoseSupport }
   | { type: 'pointer'; x: number; y: number }
@@ -138,7 +138,7 @@ export interface CharacterEvents {
 /** invoke() channels from either renderer to main */
 export interface InvokeMap {
   'runtime2:session': [void, { enabled: boolean; status: string; sharing: boolean; account?: string; model?: string }];
-  'runtime2:auth': ['signin' | 'enable' | 'disconnect' | 'cancel', void];
+  'runtime2:auth': ['signin' | 'add-account' | 'enable' | 'disconnect' | 'cancel', void];
   'runtime2:models': [void, { id: string; label: string; contextTokens?: number }[]];
   'runtime2:daily-status': [void, import('../main/runtime2/dailySession').DailySession['status'] & { readiness: Record<string, unknown> } | null];
   'runtime2:daily-config': [import('../main/runtime2/dailySession').DailySettings, void];

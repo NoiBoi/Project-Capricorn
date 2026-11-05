@@ -4,7 +4,7 @@ import electron from 'electron';
 const root = path.resolve(import.meta.dirname, '..');
 const build = spawnSync(process.execPath, [path.join(root, 'scripts', 'build.mjs')], { cwd: root, stdio: 'inherit' });
 if (build.status !== 0) process.exit(build.status ?? 1);
-const env = { ...process.env, CAPRI_RUNTIME: '2', CAPRI_V2_PROFILE_ID: 'daily-test', CAPRI_V2_DAILY: '1' };
+const env = { ...process.env, CAPRI_RUNTIME: '2', CAPRI_V2_PROFILE_ID: process.env.CAPRI_V2_PROFILE_ID ?? 'daily-test', CAPRI_V2_DAILY: '1' };
 for (const key of ['ELECTRON_RUN_AS_NODE', 'CAPRI_TEST', 'CAPRI_OFFSCREEN', 'CAPRI_NATIVE_OBSERVATION', 'CAPRI_V2_WINDOW_FOCUS']) delete env[key];
 const child = spawn(electron, [root], { cwd: root, env, stdio: 'inherit', windowsHide: true });
 child.on('exit', code => process.exit(code ?? 0));

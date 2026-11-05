@@ -158,7 +158,7 @@ export class CapriSpriteModel extends VectorModel {
     if (inp.previewClip) clip = inp.previewClip;
     const secondaryScene = this.secondaryBehavior.update(dt * (inp.secondaryRestPreview ? 6 : 1), {
       enabled: inp.secondaryEnabled !== false,
-      blocked: !!inp.moving || !!inp.previewClip || !!selected || sleeping || inp.dragging || !!inp.perchMotion || this.t < this.teleportUntil,
+      blocked: !!inp.moving || !!inp.previewClip || !!selected && selected !== 'idle' && selected !== 'perch' || sleeping || inp.dragging || !!inp.perchMotion || this.t < this.teleportUntil,
       support: inp.support ?? { sit: inp.ledge, lie: inp.ledge && inp.attachment !== 'inverted', kind: inp.ledge ? 'window_top' : 'none' },
       inverted: inp.attachment === 'inverted', hovering: !!inp.hovering, inspectingBelow: !!inp.inspectingBelow, patting: this.t < this.rubUntil,
     });

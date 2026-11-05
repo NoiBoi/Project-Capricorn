@@ -49,7 +49,8 @@ it('automatically captures a textless browser page and supplies original pixels 
   await loop.send('What is visible?');await idle(loop);
   expect(inputs[0].images).toEqual([{observationId:visual.id,capturedAt:visual.at,dataUrl:'data:image/jpeg;base64,'+Buffer.from('synthetic-JPEG-only-a-storage-fixture').toString('base64')}]);
   await loop.perception!.page({...page(),sections:[]},'extension');expect(host.capture).toHaveBeenCalledTimes(1);
-  loop.perception!.clear();expect(await loop.perception!.currentImages('ambient',AbortSignal.timeout(1000))).toHaveLength(1);host.allowed=()=>false;expect(await loop.perception!.currentImages('ambient',AbortSignal.timeout(1000))).toEqual([]);
+  expect(await loop.perception!.currentImages('ambient',AbortSignal.timeout(1000))).toEqual([]);
+  loop.perception!.clear();expect(await loop.perception!.currentImages('ambient',AbortSignal.timeout(1000))).toHaveLength(0);host.allowed=()=>false;expect(await loop.perception!.currentImages('ambient',AbortSignal.timeout(1000))).toEqual([]);
 });
 
 it('does not capture readable pages or mismatched windows and tolerates a failed automatic visual fallback',async()=>{
@@ -86,6 +87,10 @@ it('restores current semantic evidence when returning to an unchanged tab and di
   await perception.page({ ...a, revision: a.revision + 1 }, 'extension');
   const returned = perception.current('direct')[0]; expect(returned.content.sections).toEqual(a.sections); expect(returned.sourceIdentity).toBe(original.sourceIdentity);
   expect(returned.provenance.metadata.pageRecordId).toBe(a.recordId);
+  expect(returned.id).toBe(original.id);
+  const scene = await archive.readScene();
+  expect(scene.coverage.recorded).toBe(3);
+  expect(scene.recent.filter(o => o.source === 'chrome:activation')).toMatchObject([{ related: [original.id] }]);
 });
 const state = (id = 'cooling'): StateWrite => ({ id, kind: 'investigation', text: 'Revisit the three coolant loops.', provenance: 'model-interpretation', evidence: [], status: 'active', dueAt: Date.now() + 1000, expectedRevision: 0 });
 const call = (id: string, name: string, args: unknown) => ({ id, name, arguments: JSON.stringify(args) });
@@ -149,7 +154,7 @@ it('retains image originals off-journal, deduplicates captures, checks integrity
 it('clamps attention, expires bursts, honors structural wakeups, and limits hourly ambient traffic', () => {
   let now = 100000; const attention = new AttentionController(30000, 10000, () => now);
   const accepted = attention.adjust({ afterMs: 1000, durationMs: 3600000, inferenceIntervalMs: 1000, observationIntervalMs: 250, source: 'screen' });
-  expect(accepted).toMatchObject({ inferenceIntervalMs: 10000, durationMs: 900000 }); attention.started();
+  expect(accepted).toMatchObject({ inferenceIntervalMs: 10000, durationMs: 1800000 }); attention.started();
   now += 1000; expect(attention.ready(true, true, true)).toBe(false); now += 9000; expect(attention.ready(false, false, true)).toBe(true);
   for (let i = 0; i < 119; i++) { attention.started(); now += 10000; }
   expect(attention.ready(true, true, true)).toBe(false); now += 3600000; expect(attention.snapshot()).toBeNull(); expect(attention.ready(true, false, false)).toBe(true);
@@ -312,20 +317,31 @@ it('batches focus and media, backs off after silence, and reviews stable activit
   expect(attention.reason(true, true, false, new Set(['screen']), started)).toBeUndefined();
   now += 3_000;
   expect(attention.reason(true, true, false, new Set(['screen']), started)).toBe('source-change');
-  attention.started('source-change'); attention.complete(true);
+  attention.started('source-change', new Set(['screen', 'old-source'])); attention.complete(true);
   now += 30_000;
-  expect(attention.reason(true, false, false)).toBeUndefined();
-  expect(attention.reason(true, true, false)).toBeUndefined();
+  expect(attention.reason(true, false, false, new Set(['screen','old-source']))).toBeUndefined();
+  expect(attention.reason(true, true, false, new Set(['screen','new-source']))).toBe('source-change');
+  expect(attention.reason(true, false, false, new Set(['screen','new-source']))).toBe('batched-change');
   now += 600_000;
   expect(attention.reason(false, false, false)).toBeUndefined();
   expect(attention.reason(true, true, false)).toBe('source-change');
   attention.started('source-change');
-  attention.adjust({ afterMs: 90_000, durationMs: 30_000, inferenceIntervalMs: 10_000, observationIntervalMs: 500, source: 'chrome' });
+  attention.adjust({ afterMs: 90_000, durationMs: 30_000, inferenceIntervalMs: 10_000, observationIntervalMs: 500, source: 'chrome', sourceIdentity: 'watched', priority: 'high', conditions: ['material-change'], ambient: 'watch-only' });
   now += 10_000;
   expect(attention.reason(true, false, false, new Set(['screen']))).toBeUndefined();
-  expect(attention.reason(true, false, false, new Set(['chrome']))).toBe('monitored-change');
+  expect(attention.reason(true, true, false)).toBeUndefined();
+  attention.observe('chrome', 'other', ['material-change']);
+  attention.observe('chrome', 'watched', ['content-changed']);
+  expect(attention.reason(true, false, false)).toBeUndefined();
+  const restarted = new AttentionController(30_000, 10_000, () => now);
+  restarted.restore(attention.durableState());
+  restarted.observe('chrome', 'watched', ['material-change']);
+  expect(restarted.reason(true, false, false)).toBe('monitored-change');
+  expect(restarted.matchedCondition).toMatchObject({ condition: 'material-change', source: 'watched' });
   now += 80_000;
   expect(attention.reason(false, false, false)).toBe('attention-review');
+  restarted.observe('chrome', 'watched', ['material-change']);
+  expect(restarted.matchedCondition).toBeUndefined();
   attention.adjust({ action: 'pause' });
   expect(attention.reason(true, true, false)).toBeUndefined();
   expect(attention.reason(false, false, true)).toBe('commitment-due');
@@ -369,7 +385,7 @@ it('uses ranked compact discovery and batches known originals, then invalidates 
   await loop.send('Find the older reactor evidence.');
   await idle(loop);
   expect(inputs[1].records.find(r => r.kind === 'tool-result' && r.requestId === 'discover')).toMatchObject({
-    result: { ranking: 'bm25-lower-is-better', hits: [{ observation: { id: originalId } }] },
+    result: { ranking: 'phrase then all terms then partial; BM25 ascending within tier', hits: [{ observation: { id: originalId } }] },
   });
   expect(inputs[1].records.find(r => r.kind === 'tool-result' && r.requestId === 'batch')).toMatchObject({
     result: { results: [{ observationId: originalId, result: { original: { sections: [{ text: expect.stringContaining('sapphire') }] } } },
@@ -379,6 +395,9 @@ it('uses ranked compact discovery and batches known originals, then invalidates 
   await archive.appendConversation({ id: 'older-dialogue', at: Date.now() - 86400000, kind: 'assistant', text: 'The thermal exchanger was inspected.' });
   expect((await archive.discover({ search: 'thermal exchanger', modality: 'dialogue' })).hits).toMatchObject([
     { dialogue: { id: 'older-dialogue' } },
+  ]);
+  expect((await archive.discover({ search: 'thermal exchanger schedule', modality: 'dialogue' })).hits).toMatchObject([
+    { dialogue: { id: 'older-dialogue' }, tier: 2 },
   ]);
   await archive.forgetSource('chrome');
   expect((await archive.discover({ search: 'thermal exchanger', modality: 'dialogue' })).hits).toEqual([]);
@@ -400,4 +419,137 @@ it('persists checkpoint revisions and bounds durable investigation scheduling', 
     await restored.putState({ ...state(), dueAt: dueAt + revision, expectedRevision: revision });
   }
   await expect(restored.putState({ ...state(), dueAt: dueAt + 5, expectedRevision: 4 })).rejects.toThrow('budget exhausted');
+});
+
+it('covers hundreds of transitions, expired evidence, and a write during inference', async () => {
+  const { archive, create } = await fixture();
+  const now = Date.now();
+  const observation = (i: number) => ({
+    id: 'burst-' + i, at: now + i, source: 'chrome', sourceIdentity: 'tab-' + i % 3,
+    modality: 'browser-page' as const,
+    content: { handle: '42', process: 'chrome.exe', title: 'Version ' + i },
+    disclosure: { source: 'chrome' as const, retain: true, retainUntil: i === 1 ? now - 1 : now + 60000 },
+    provenance: { authority: 'host' as const, collector: 'fixture', metadata: {} },
+    loss: { truncated: false, missing: [] },
+  });
+  for (let i = 0; i < 300; i++) await archive.write(observation(i));
+  const initial = await archive.readScene();
+  expect(initial.coverage).toMatchObject({ recorded: 300, retained: 299, after: 0 });
+  expect(initial.recent).toHaveLength(24);
+  await archive.close();
+  const restored = await create();
+  const before = await restored.readScene();
+  expect(before.coverage).toEqual(initial.coverage);
+
+  const loop = new CognitiveLoop(restored, { models: async () => [model], shutdown() {}, async infer(_model, input) {
+    expect(input.workingState).toMatchObject({
+      sceneCoverage: { through: initial.version, recorded: 300, expiredOrDeleted: 1, full: 0, metadataOrExcerpt: 11, unexpandedRetained: 288 },
+      episode: { through: initial.version, observations: 300, sampleHasMore: true },
+    });
+    await restored.write(observation(300));
+    return { calls: [], text: '' };
+  } }, new TypedCapabilityExecutor(), { model: model.id, ambientMs: 60000 });
+  cleanup.push(() => loop.shutdown());
+  await loop.initialize();
+  await loop.send('Check the activity.');
+  await idle(loop);
+  expect(loop.state.phase).toBe('idle');
+  expect((await restored.readScene()).coverage).toMatchObject({ after: initial.version, recorded: 1, retained: 1 });
+  let after = 0, count = 0, missing = 0;
+  while (after < initial.version) {
+    const page = await restored.sceneEvents({ after, through: initial.version, limit: 23 });
+    count += page.events.length;
+    missing += page.events.filter(e => !e.observation).length;
+    if (page.nextAfter === null) break;
+    after = page.nextAfter;
+  }
+  expect([count, missing]).toEqual([300, 1]);
+  await restored.forgetSource('chrome');
+  expect(await restored.episodeList()).toEqual([]);
+  expect((await restored.sceneEvents({ after: 0, through: initial.version, limit: 23 })).events).toEqual([]);
+  expect(await restored.get('burst-0')).toBeUndefined();
+});
+
+it('ranks exact evidence before partial evidence and deduplicates across pages', async () => {
+  const { archive } = await fixture();
+  const now = Date.now();
+  for (const [i, text] of ['sapphire coolant loop', 'sapphire coolant loop', 'sapphire replacement valve', 'coolant comes after sapphire'].entries()) {
+    await archive.write({
+      id: 'lexical-' + i, at: now + i, source: 'chrome', sourceIdentity: 'manual', modality: 'browser-page',
+      content: { handle: null, process: 'chrome.exe', title: 'Manual', text },
+      provenance: { authority: 'host', collector: 'fixture', metadata: {} }, loss: { truncated: false, missing: [] },
+    });
+  }
+  const query = { search: 'sapphire coolant', limit: 1, source: 'manual' };
+  const pages = await Promise.all([0, 1, 2, 3].map(offset => archive.discover({ ...query, offset })));
+  expect(pages.map(page => page.hits.map(hit => 'observation' in hit && [hit.observation.id, hit.tier])))
+    .toEqual([[['lexical-1', 0]], [['lexical-3', 1]], [['lexical-2', 2]], []]);
+  expect((await archive.discover({ ...query, to: now })).hits).toMatchObject([{ observation: { id: 'lexical-0' } }]);
+  expect((await archive.discover({ ...query, search: 'cerulean refrigerant' })).hits).toEqual([]);
+});
+
+it('restores a watch and recovers a matched event that was journaled before acknowledgment', async () => {
+  const { archive, create } = await fixture();
+  const controller = new AttentionController(60000, 10);
+  controller.adjust({ source: 'chrome', sourceIdentity: 'watched', durationMs: 60000, inferenceIntervalMs: 10_000,
+    observationIntervalMs: 1000, conditions: ['content-changed'], priority: 'high', afterMs: 30000, reviewIfUnchanged: true });
+  await archive.writeAttention(controller.durableState());
+  await archive.write({
+    id: 'watch-recovery', at: Date.now(), source: 'chrome', sourceIdentity: 'watched', modality: 'browser-page',
+    disclosure: { source: 'chrome', retain: true },
+    content: { title: 'Changed document', process: 'chrome.exe', handle: null },
+    provenance: { authority: 'host', collector: 'fixture', metadata: {} }, loss: { truncated: false, missing: [] },
+  }, ['content-changed']);
+  await archive.close();
+  const restored = await create();
+  const inputs: ModelInput[] = [];
+  const loop = new CognitiveLoop(restored, { models: async () => [model], shutdown() {}, async infer(_model, input) {
+    inputs.push(input);
+    return { text: '', calls: [] };
+  } }, new TypedCapabilityExecutor(), { model: model.id, ambientMs: 20 });
+  cleanup.push(() => loop.shutdown());
+  await loop.initialize();
+  await expect.poll(() => inputs.length).toBe(1);
+  await idle(loop);
+  expect(inputs[0].workingState).toMatchObject({
+    matchedCondition: { source: 'watched', condition: 'content-changed' },
+    sceneCoverage: { recorded: 1, full: 1, metadataOrExcerpt: 0 },
+  });
+  expect((await restored.readScene()).coverage.recorded).toBe(0);
+  expect((await restored.readAttention())?.nextReviewAt).toBeUndefined();
+});
+
+it('supplies bounded before and after excerpts for permitted browser changes', async () => {
+  const { archive, host } = await fixture();
+  const inputs: ModelInput[] = [];
+  const loop = new CognitiveLoop(archive, { models: async () => [model], shutdown() {}, async infer(_model, input) {
+    inputs.push(input);
+    return { text: '', calls: [] };
+  } }, new TypedCapabilityExecutor(), { model: model.id, host, ambientMs: 20 });
+  cleanup.push(() => loop.shutdown());
+  await loop.initialize();
+  const at = Date.now();
+  const observation = (id: string, text: string, related: string[] = []) => ({
+    id, at, related, source: 'chrome', sourceIdentity: 'delta-tab', modality: 'browser-page' as const,
+    content: { handle: null, process: 'chrome.exe', title: 'Delta fixture', url: 'https://example.org/delta', text },
+    provenance: { authority: 'host' as const, collector: 'fixture', metadata: {} },
+    loss: { truncated: true, missing: ['hidden-text'] },
+  });
+  await archive.write(observation('delta-before', 'Valve setpoint 200 kPa'));
+  await archive.write(observation('delta-after', 'Valve setpoint 350 kPa', ['delta-before']));
+  loop.notifyObservation(false, 'chrome', 'delta-tab', ['observation'], at, false);
+  expect(loop.attention.matchedCondition).toBeUndefined();
+  loop.notifyObservation(true);
+  await expect.poll(() => inputs.length).toBe(1);
+  await idle(loop);
+  expect(inputs[0].workingState).toMatchObject({ contentDeltas: [{
+    before: { id: 'delta-before', at, excerpt: 'Valve setpoint 200 kPa', sourceTruncated: true, excerptClipped: false },
+    after: { id: 'delta-after', at, excerpt: 'Valve setpoint 350 kPa', sourceTruncated: true, excerptClipped: false },
+  }] });
+  host.allowed = (_operation, observation) => observation?.id !== 'delta-after';
+  await archive.write(observation('delta-later', 'Valve setpoint 400 kPa', ['delta-after']));
+  loop.notifyObservation(true);
+  await expect.poll(() => inputs.length).toBe(2);
+  await idle(loop);
+  expect(inputs[1].workingState).not.toHaveProperty('contentDeltas');
 });

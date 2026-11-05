@@ -26,7 +26,7 @@ function transaction<T>(run: () => T): T {
   catch (error) { db!.exec('ROLLBACK'); throw error; }
 }
 function prune(now: number) {
-  db!.prepare("DELETE FROM observations WHERE ingested_at < ? OR json_extract(payload, '$.disclosure.retainUntil') < ?").run(now - retention.maxAgeMs, now);
+  db!.prepare("DELETE FROM observations WHERE ingested_at < ? OR json_extract(payload, '$.disclosure.retainUntil') <= ?").run(now - retention.maxAgeMs, now);
   db!.prepare('DELETE FROM observations WHERE id IN (SELECT id FROM observations ORDER BY ingested_at DESC, rowid DESC LIMIT -1 OFFSET ?)').run(retention.maxRecords);
 }
 function read(row: Record<string, unknown> | undefined): Observation | undefined { return row ? JSON.parse(row.payload as string) : undefined; }
@@ -79,24 +79,46 @@ function discover(input: DiscoveryQuery) {
   const q = validateDiscovery(input);
   const terms = (q.search?.match(/[\p{L}\p{N}_]+/gu) ?? []).slice(0, 24);
   const ranked = fts && terms.length > 0;
-  const match = terms.map(term => '"' + term + '"').join(' AND ');
+  const words = [...new Set(terms.map(term => '"' + term.toLowerCase() + '"'))];
+  const match = words.join(' AND ');
+  const phrase = '"' + terms.join(' ') + '"';
+  const relaxed = words.join(' OR ');
+  const ranking = ranked ? 'phrase then all terms then partial; BM25 ascending within tier' : q.search ? 'bounded-literal' : 'chronological';
+  const branches = ranked && words.length > 1
+    ? [{ tier: 0, match: phrase }, { tier: 1, match }, { tier: 2, match: relaxed }]
+    : [{ tier: 0, match }];
   if (q.modality === 'dialogue') {
-    const rows = db!.prepare(`SELECT c.payload, ${ranked ? 'bm25(dialogue_search)' : 'NULL'} AS score
+    const sql = `SELECT c.sequence, ${ranked ? 'bm25(dialogue_search)' : 'NULL'} AS score
       FROM ${ranked ? 'dialogue_search JOIN conversation_records c ON c.sequence=dialogue_search.rowid'
         : '(SELECT * FROM conversation_records WHERE observation_id IS NULL ORDER BY sequence DESC LIMIT 4096) c'}
       WHERE ${ranked ? 'dialogue_search MATCH ?' : "(? IS NULL OR instr(lower(json_extract(c.payload,'$.text')),lower(?))>0)"}
         AND json_extract(c.payload,'$.kind') IN ('user','assistant')
         AND json_extract(c.payload,'$.at') BETWEEN ? AND ?
         AND (? IS NULL OR c.id=?)
-      ORDER BY score,c.sequence DESC LIMIT ? OFFSET ?`).all(...(ranked ? [match] : [q.search ?? null,q.search ?? null]),
-        q.from ?? -Number.MAX_VALUE, q.to ?? Number.MAX_VALUE, q.relatedId ?? null, q.relatedId ?? null, q.limit + 1, q.offset);
+      `;
+    const rows = db!.prepare(`WITH candidates AS MATERIALIZED (
+        ${branches.map(({ tier }) => 'SELECT ' + tier + ' AS tier, matches.* FROM (' + sql + ') matches').join(' UNION ALL ')}
+      ), best AS (
+        SELECT *, row_number() OVER (PARTITION BY sequence ORDER BY tier, score) AS duplicate FROM candidates
+      ), ordered AS (
+        SELECT *, row_number() OVER (PARTITION BY tier ORDER BY score, sequence DESC) AS tier_position
+        FROM best WHERE duplicate=1
+      ), page AS (
+        SELECT sequence, tier, score FROM ordered
+        WHERE tier<2 OR (tier_position<=24 AND (SELECT count(*) FROM ordered WHERE tier<2)<12)
+        ORDER BY tier, score, sequence DESC LIMIT ? OFFSET ?
+      )
+      SELECT c.payload, page.tier, page.score FROM page JOIN conversation_records c ON c.sequence=page.sequence
+      ORDER BY page.tier, page.score, page.sequence DESC`).all(
+        ...branches.flatMap(branch => [...(ranked ? [branch.match] : [q.search ?? null,q.search ?? null]),
+          q.from ?? -Number.MAX_VALUE, q.to ?? Number.MAX_VALUE, q.relatedId ?? null, q.relatedId ?? null]), q.limit + 1, q.offset);
     return { hits: rows.slice(0,q.limit).map(row => {
       const { id, kind, at, text } = JSON.parse(String(row.payload));
-      return { dialogue: { id, kind, at, text: text.slice(0,280) }, score: row.score };
+      return { dialogue: { id, kind, at, text: text.slice(0,280) }, score: row.score, tier: Number(row.tier) };
     }), nextOffset: rows.length > q.limit && q.offset + q.limit <= 10000 ? q.offset + q.limit : null,
-      ranking: ranked ? 'bm25-lower-is-better' : q.search ? 'bounded-literal' : 'chronological' };
+      ranking };
   }
-  const sql = `SELECT o.payload, ${ranked ? "bm25(observation_search,3,2,1) AS score, snippet(observation_search,-1,'','','...',20) AS snippet" : 'NULL AS score, NULL AS snippet'}
+  const sql = `SELECT o.id, o.observed_at, evidence_key(o.payload) AS evidence_key, ${ranked ? "bm25(observation_search,3,2,1) AS score, snippet(observation_search,-1,'','','...',20) AS snippet" : 'NULL AS score, NULL AS snippet'}
     FROM ${ranked ? 'observation_search JOIN observations o ON o.rowid=observation_search.rowid'
       : q.search ? '(SELECT * FROM observations ORDER BY observed_at DESC LIMIT 4096) o' : 'observations o'}
     WHERE ${ranked ? 'observation_search MATCH ?' : '(? IS NULL OR instr(lower(o.payload),lower(?))>0)'}
@@ -104,21 +126,40 @@ function discover(input: DiscoveryQuery) {
       AND (? IS NULL OR o.source=? OR o.process=? OR json_extract(o.payload,'$.sourceIdentity')=? OR json_extract(o.payload,'$.content.handle')=?)
       AND (? IS NULL OR json_extract(o.payload,'$.modality')=?)
       AND (? IS NULL OR o.id=? OR EXISTS(SELECT 1 FROM json_each(o.payload,'$.related') WHERE value=?))
-    ORDER BY score, o.observed_at DESC, o.id DESC LIMIT ? OFFSET ?`;
+    `;
   const source = q.source ?? null, modality = q.modality ?? null, related = q.relatedId ?? null;
-  const rows = db!.prepare(sql).all(...(ranked ? [match] : [q.search ?? null, q.search ?? null]),
-    q.from ?? -Number.MAX_VALUE, q.to ?? Number.MAX_VALUE, source, source, source, source, source,
-    modality, modality, related, related, related, q.limit + 1, q.offset);
+  const filters = [q.from ?? -Number.MAX_VALUE, q.to ?? Number.MAX_VALUE, source, source, source, source, source,
+    modality, modality, related, related, related];
+  // Apply pagination after choosing one representative per source/content pair.
+  // Bound partial results across the query, independently of page size.
+  const rows = db!.prepare(`WITH candidates AS MATERIALIZED (
+      ${branches.map(({ tier }) => 'SELECT ' + tier + ' AS tier, matches.* FROM (' + sql + ') matches').join(' UNION ALL ')}
+    ), unique_hits AS (
+      SELECT *, row_number() OVER (PARTITION BY evidence_key ORDER BY tier, score, observed_at DESC, id DESC) AS duplicate
+      FROM candidates
+    ), ordered AS (
+      SELECT *, row_number() OVER (PARTITION BY tier ORDER BY score, observed_at DESC, id DESC) AS tier_position
+      FROM unique_hits WHERE duplicate=1
+    )
+    , page AS (
+      SELECT id, tier, score, snippet, observed_at FROM ordered
+      WHERE tier<2 OR (tier_position<=24 AND (SELECT count(*) FROM ordered WHERE tier<2)<12)
+      ORDER BY tier, score, observed_at DESC, id DESC LIMIT ? OFFSET ?
+    )
+    SELECT o.payload, page.tier, page.score, page.snippet FROM page JOIN observations o ON o.id=page.id
+    ORDER BY page.tier, page.score, page.observed_at DESC, page.id DESC`).all(
+      ...branches.flatMap(branch => [...(ranked ? [branch.match] : [q.search ?? null,q.search ?? null]), ...filters]),
+      q.limit + 1, q.offset);
   return { hits: rows.slice(0,q.limit).map(row => {
       const original = read(row)!;
       const { text, sections, ...metadata } = original.content;
       const snippet = typeof row.snippet === 'string' ? row.snippet : '';
       const preview = (snippet || text?.trim() || sections?.find(section => section.text.trim())?.text || metadata.title).slice(0,280);
       return { observation: { ...original, content: { ...metadata, text: preview } },
-        score: row.score, contentHash: observationHash(original) };
+        score: row.score, tier: Number(row.tier), contentHash: observationHash(original) };
     }),
     nextOffset: rows.length > q.limit && q.offset + q.limit <= 10000 ? q.offset + q.limit : null,
-    ranking: ranked ? 'bm25-lower-is-better' : q.search ? 'bounded-literal' : 'chronological' };
+    ranking };
 }
 function appendRecord(record: RecordInput) {
   validateId(record.id);
@@ -149,6 +190,19 @@ function rememberScene(o: Observation, sequence: number) {
     .run(observationSlot(o), o.id, observationHash(o), sequence, sequence);
   db!.prepare('DELETE FROM scene_sources WHERE slot IN (SELECT slot FROM scene_sources ORDER BY sequence DESC LIMIT -1 OFFSET 96)').run();
 }
+function rememberEpisode(sequence: number, at: number) {
+  const previous = db!.prepare('SELECT id,started_at,last_activity_at FROM activity_episodes ORDER BY id DESC LIMIT 1').get();
+  if (previous && at - Number(previous.last_activity_at) <= 5 * 60_000 && at - Number(previous.started_at) < 30 * 60_000) {
+    db!.prepare('UPDATE activity_episodes SET end_sequence=?, last_activity_at=max(last_activity_at,?), observations=observations+1 WHERE id=?')
+      .run(sequence, at, previous.id!);
+  } else db!.prepare('INSERT INTO activity_episodes VALUES(?,?,?,?,1)').run(sequence, sequence, at, at);
+}
+function pruneEpisodes() {
+  db!.exec(`DELETE FROM activity_episodes AS episode WHERE NOT EXISTS (
+    SELECT 1 FROM conversation_records c JOIN observations o ON o.id=c.observation_id
+    WHERE c.sequence BETWEEN episode.id AND episode.end_sequence
+  )`);
+}
 // Fetch only factual state for Layer 0. Large bodies remain in the archive.
 const sceneProjection = `json_remove(o.payload, '$.content.sections', '$.content.text', '$.content.changedSections') AS payload`;
 function dispatch(request: ArchiveRequest): unknown {
@@ -176,7 +230,7 @@ function dispatch(request: ArchiveRequest): unknown {
       const check = db.prepare('PRAGMA integrity_check').all();
       if (check.length !== 1 || check[0].integrity_check !== 'ok') throw Error('Integrity check failed');
       const version = Number(db.prepare('PRAGMA user_version').get()!.user_version);
-      if (version > 5) throw Error('Newer unsupported archive schema; upgrade Capri');
+      if (version > 6) throw Error('Newer unsupported archive schema; upgrade Capri');
       // Match the legacy store's Windows-conscious durability without sharing its DB.
       db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA secure_delete=ON;');
       transaction(() => {
@@ -203,8 +257,22 @@ function dispatch(request: ArchiveRequest): unknown {
           const rows = db!.prepare('SELECT c.sequence, o.payload FROM conversation_records c JOIN observations o ON o.id=c.observation_id ORDER BY c.sequence DESC LIMIT 256').all().reverse();
           for (const row of rows) rememberScene(read(row)!, Number(row.sequence));
         }
-        initializeSearch();
+        if (version < 6) {
+          db!.exec(`CREATE TABLE activity_episodes (
+          id INTEGER PRIMARY KEY, end_sequence INTEGER NOT NULL, started_at REAL NOT NULL,
+          last_activity_at REAL NOT NULL, observations INTEGER NOT NULL);
+          PRAGMA user_version=6;`);
+          const recent = db!.prepare(`SELECT c.sequence,o.ingested_at FROM conversation_records c
+            JOIN observations o ON o.id=c.observation_id ORDER BY c.sequence DESC LIMIT 512`).all().reverse();
+          for (const row of recent) rememberEpisode(Number(row.sequence), Number(row.ingested_at));
+        }
+        db!.function('evidence_key', { deterministic: true }, payload => {
+        const o: Observation = JSON.parse(String(payload));
+        return JSON.stringify([o.modality, o.sourceIdentity ?? o.source, observationHash(o)]);
+      });
+      initializeSearch();
         prune(now ?? Date.now());
+        pruneEpisodes();
       });
       evidence = new EvidenceStore(db, dir, request.input.evidenceRetention ?? DEFAULT_EVIDENCE_RETENTION);
       measureJournal();
@@ -225,6 +293,9 @@ function dispatch(request: ArchiveRequest): unknown {
       if (!old && Number(db!.prepare('SELECT count(*) AS n FROM canonical_state').get()!.n) >= 1000) throw Error('Canonical state limit reached');
       if (input.pinned && input.status === 'active' && !(old?.pinned && old.status === 'active') &&
           Number(db!.prepare("SELECT count(*) AS n FROM canonical_state WHERE status='active' AND json_extract(payload,'$.pinned')=1").get()!.n) >= 6) throw Error('Foundational memory limit reached');
+      if (input.expiresAt !== undefined && (input.kind !== 'checkpoint' || input.expiresAt <= now || input.expiresAt > now + 365 * 86400000)) throw Error('Invalid checkpoint expiration');
+      if (input.episodeId !== undefined && (!['checkpoint', 'investigation'].includes(input.kind) ||
+          !db!.prepare('SELECT id FROM activity_episodes WHERE id=?').get(input.episodeId))) throw Error('Unknown activity episode');
       if (input.dueAt !== null && (!['intention','investigation','interest'].includes(input.kind) || input.dueAt > now + 365 * 86400000)) throw Error('Invalid future review');
       for (const id of input.evidence) if (!db!.prepare('SELECT id FROM observations WHERE id=?').get(id) && !db!.prepare('SELECT id FROM conversation_records WHERE id=?').get(id)) throw Error('Evidence reference is missing');
       if (input.provenance === 'host-observation' && (!input.evidence.length || input.evidence.some(id => !db!.prepare('SELECT id FROM observations WHERE id=?').get(id)))) throw Error('Host provenance requires original observations');
@@ -240,23 +311,75 @@ function dispatch(request: ArchiveRequest): unknown {
     });
     case 'discover': return discover(request.input);
     case 'latestSource': return read(db.prepare('SELECT o.payload FROM scene_sources s JOIN observations o ON o.id=s.observation_id WHERE s.slot=?').get(request.input.slot));
+    case 'episodeList': {
+      const { source, before, now, ...times } = request.input;
+      prune(now ?? Date.now());
+      validateQuery(times);
+      if (source !== undefined) validateId(source);
+      if (before !== undefined && (!Number.isSafeInteger(before) || before < 1)) throw Error('Invalid episode cursor');
+      return db.prepare(`SELECT e.id,e.end_sequence AS endSequence,e.started_at AS startedAt,e.last_activity_at AS lastActivityAt,e.observations
+        FROM activity_episodes e WHERE e.id<? AND e.started_at<=? AND e.last_activity_at>=?
+        AND (? IS NULL OR EXISTS(SELECT 1 FROM conversation_records c JOIN observations o ON o.id=c.observation_id
+          WHERE c.sequence BETWEEN e.id AND e.end_sequence AND (o.source=? OR o.process=? OR json_extract(o.payload,'$.sourceIdentity')=? OR json_extract(o.payload,'$.content.handle')=?)))
+        ORDER BY e.id DESC LIMIT 12`).all(before ?? Number.MAX_SAFE_INTEGER, times.to ?? Number.MAX_VALUE, times.from ?? -Number.MAX_VALUE,
+          source ?? null, source ?? null, source ?? null, source ?? null, source ?? null);
+    }
+    case 'sceneEvents': {
+      const { after, through, limit, latest, source, now = Date.now(), watchStartedAt } = request.input;
+      if (source !== undefined) validateId(source);
+      if (![after, through, limit].every(Number.isSafeInteger) || after < 0 || through < after || limit < 1 || limit > 50) throw Error('Invalid event range');
+      const rows = db.prepare(`SELECT c.sequence,json_extract(c.payload,'$.conditions') AS conditions,${sceneProjection} FROM conversation_records c LEFT JOIN observations o ON o.id=c.observation_id
+        AND o.ingested_at>=? AND coalesce(json_extract(o.payload,'$.disclosure.retainUntil'),?)>?
+        WHERE c.observation_id IS NOT NULL AND c.sequence>? AND c.sequence<=?
+        AND (? IS NULL OR o.source=? OR o.process=? OR json_extract(o.payload,'$.sourceIdentity')=? OR json_extract(o.payload,'$.content.handle')=?)
+        AND (? IS NULL OR (o.observed_at>=? AND json_extract(c.payload,'$.conditions') IS NOT NULL))
+        ORDER BY c.sequence ${latest ? 'DESC' : 'ASC'} LIMIT ?`).all(now - retention.maxAgeMs, Number.MAX_VALUE, now, after, through, ...Array(5).fill(source ?? null), watchStartedAt ?? null, watchStartedAt ?? null, limit + 1);
+      return { events: rows.slice(0, limit).map(row => ({ sequence: Number(row.sequence), observation: row.payload ? read(row) : undefined, conditions: row.conditions ? JSON.parse(String(row.conditions)) : undefined })),
+        nextAfter: rows.length > limit ? Number(rows[limit - 1].sequence) : null };
+    }
     case 'readScene': {
+      prune(request.input.now ?? Date.now());
       const cursor = Number(db.prepare('SELECT scene_cursor FROM logical_conversation').get()!.scene_cursor);
       const rows = db.prepare(`SELECT s.sequence,s.changed_sequence,${sceneProjection} FROM scene_sources s
         JOIN observations o ON o.id=s.observation_id ORDER BY s.sequence DESC`).all();
+      const window = db.prepare(`SELECT count(*) AS recorded,count(o.id) AS retained,max(c.sequence) AS last,
+        min(json_extract(c.payload,'$.at')) AS firstAt,max(json_extract(c.payload,'$.at')) AS lastAt
+        FROM conversation_records c LEFT JOIN observations o ON o.id=c.observation_id
+        WHERE c.observation_id IS NOT NULL AND c.sequence>?`).get(cursor)!;
+      const version = Math.max(cursor, Number(window.last));
       return {
+        coverage: { after: cursor, through: version, recorded: Number(window.recorded), retained: Number(window.retained),
+          firstAt: window.firstAt, lastAt: window.lastAt },
+        episode: db.prepare(`SELECT id,end_sequence AS endSequence,started_at AS startedAt,last_activity_at AS lastActivityAt,observations
+          FROM activity_episodes ORDER BY id DESC LIMIT 1`).get(),
         recent: db.prepare(`SELECT ${sceneProjection} FROM
-          (SELECT observation_id FROM conversation_records WHERE sequence>? AND observation_id IS NOT NULL ORDER BY sequence DESC LIMIT 24) c
-          JOIN observations o ON o.id=c.observation_id`).all(cursor).map(row => read(row)!),
-        cursor, version: Math.max(cursor, ...rows.map(r => Number(r.sequence))),
+          (SELECT sequence,observation_id FROM conversation_records WHERE sequence>? AND observation_id IS NOT NULL ORDER BY sequence DESC LIMIT 24) c
+          JOIN observations o ON o.id=c.observation_id ORDER BY c.sequence DESC`).all(cursor).map(row => read(row)!),
+        cursor, version,
         latest: rows.map(r => read(r)!),
-        changes: rows.filter(r => Number(r.changed_sequence) > cursor).map(r => read(r)!),
+        changes: rows.filter(r => Number(r.changed_sequence) > cursor && Number(r.sequence) <= version).map(r => read(r)!),
       };
     }
     case 'acknowledgeScene':
       if (!Number.isSafeInteger(request.input.version) || request.input.version < 0) throw Error('Invalid scene cursor');
+      if (!db.prepare('SELECT 1 FROM conversation_records WHERE sequence=? AND observation_id IS NOT NULL').get(request.input.version)) {
+        const cursor = Number(db.prepare('SELECT scene_cursor FROM logical_conversation').get()!.scene_cursor);
+        if (request.input.version > cursor) throw Error('Scene cursor is outside the observation journal');
+      }
       db.prepare('UPDATE logical_conversation SET scene_cursor=max(scene_cursor,?)').run(request.input.version);
       return null;
+    case 'dialogueExchange': {
+      validateId(request.input.id);
+      const hit=db.prepare("SELECT sequence FROM conversation_records WHERE id=? AND json_extract(payload,'$.kind') IN ('user','assistant')").get(request.input.id);
+      if(!hit)return [];
+      const start=db.prepare("SELECT max(sequence) AS n FROM conversation_records WHERE sequence<=? AND json_extract(payload,'$.kind')='user'").get(Number(hit.sequence))?.n;
+      if(start==null)return [];
+      const end=db.prepare("SELECT min(sequence) AS n FROM conversation_records WHERE sequence>? AND json_extract(payload,'$.kind')='user'").get(Number(start))?.n;
+      const rows=db.prepare("SELECT sequence,payload FROM conversation_records WHERE sequence>=? AND sequence<? AND json_extract(payload,'$.kind') IN ('user','assistant') ORDER BY sequence LIMIT 65").all(Number(start),end==null?Number.MAX_SAFE_INTEGER:Number(end));
+      // Oversized exchanges remain explicitly retrievable; never supply a clipped exchange as complete.
+      if(rows.length>64||rows.reduce((n,r)=>n+Buffer.byteLength(String(r.payload)),0)>24000)return [];
+      return rows.map(r=>({...JSON.parse(String(r.payload)),sequence:Number(r.sequence)}));
+    }
     case 'getDialogue': {
       const row = db.prepare("SELECT payload FROM conversation_records WHERE id=? AND json_extract(payload, '$.kind') IN ('user','assistant')").get(request.input.id);
       if (!row) return null;
@@ -284,14 +407,14 @@ function dispatch(request: ArchiveRequest): unknown {
         if (state.dueAt !== null && state.dueAt <= request.input.at) db!.prepare('UPDATE canonical_state SET payload=? WHERE id=?').run(JSON.stringify({ ...state, reviewedAt: request.input.at }), id);
       } return null;
     });
-    case 'maintain': prune(Date.now()); evidence.prune(); return null;
+    case 'maintain': prune(Date.now()); pruneEpisodes(); evidence.prune(); return null;
     case 'putEvidence': return evidence.put(request.input.data, request.input.mime, request.input.expiresAt);
     case 'getEvidence': return evidence.get(request.input.id);
     case 'forgetSource': { transaction(() => {
       const source = request.input.source; if (!['chrome','screen'].includes(source)) throw Error('Invalid source');
       // Retrieved evidence can be embedded in tool results and interpretation. Preserve direct user statements,
       // purge derived state and tool history rather than retaining revoked content through a back door.
-      db!.exec("DELETE FROM conversation_records WHERE json_extract(payload, '$.kind') != 'user'; DELETE FROM canonical_state;");
+      db!.exec("DELETE FROM conversation_records WHERE json_extract(payload, '$.kind') != 'user'; DELETE FROM canonical_state; DELETE FROM activity_episodes; UPDATE logical_conversation SET attention=NULL;");
       db!.prepare("DELETE FROM observations WHERE json_extract(payload, '$.disclosure.source')=? OR ?='screen' OR lower(process) IN ('chrome','chrome.exe')").run(source,source);
       db!.exec('DELETE FROM evidence');
       return null;
@@ -304,8 +427,9 @@ function dispatch(request: ArchiveRequest): unknown {
         const inserted = !existing, now = request.input.now ?? Date.now();
         if (inserted) db!.prepare('INSERT INTO observations VALUES (?,?,?,?,?,?,?)').run(o.id, o.at, now, o.source, o.content.process, o.content.title, json);
         if (inserted) {
-          const { sequence } = appendRecord({ id: 'observation:' + createHash('sha256').update(o.id).digest('hex'), at: o.at, kind: 'observation', observationId: o.id });
+          const { sequence } = appendRecord({ id: 'observation:' + createHash('sha256').update(o.id).digest('hex'), at: o.at, kind: 'observation', observationId: o.id, conditions: request.input.conditions });
           rememberScene(o, sequence);
+          rememberEpisode(sequence, now);
         }
         prune(now);
         return { inserted };
@@ -317,7 +441,7 @@ function dispatch(request: ArchiveRequest): unknown {
       return { id: db.prepare('SELECT id FROM logical_conversation').get()!.id, records: rows.map(row => ({ ...JSON.parse(row.payload as string), sequence: Number(row.sequence), ...(row.observation ? { observation: JSON.parse(row.observation as string) } : {}) })) };
     }
     case 'appendConversation': return transaction(() => appendRecord(request.input));
-    case 'clearConversation': db.exec('DELETE FROM conversation_records'); measureJournal(); return null;
+    case 'clearConversation': db.exec('DELETE FROM conversation_records; DELETE FROM activity_episodes'); measureJournal(); return null;
     case 'recent': return recent(request.input);
     case 'restore': return recent({ limit: 256 }, 256).reverse();
     case 'get': validateId(request.input.id); return read(db.prepare('SELECT payload FROM observations WHERE id=?').get(request.input.id));

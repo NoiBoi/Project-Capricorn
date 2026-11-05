@@ -68,12 +68,12 @@ export class WindowFocusArchive {
     catch (error) { clearTimeout(timer); this.pending.delete(id); reject(error instanceof Error ? error : Error(String(error))); }
     return task as Promise<Operations[K]['output']>;
   }
-  async write(observation: Observation) {
+  async write(observation: Observation, conditions?: Operations['write']['input']['conditions']) {
     this.writes++;
     try {
       if (this.state !== 'ready') throw Error('Archive is not accepting writes');
       validateObservation(observation);
-      return await this.request('write', { observation, now: this.options.now?.() });
+      return await this.request('write', { observation, conditions, now: this.options.now?.() });
     } catch (error) { this.recordFailure(error); throw error; }
     finally { this.writes--; }
   }
@@ -89,9 +89,12 @@ export class WindowFocusArchive {
   async putState(input: StateWrite) { this.ready(); return this.request('putState', input); }
   async discover(query: Operations['discover']['input']) { this.ready(); return this.request('discover', query); }
   async latestSource(slot: string) { this.ready(); return this.request('latestSource', { slot }); }
-  async readScene() { this.ready(); return this.request('readScene', {}); }
+  async episodeList(input: Operations['episodeList']['input'] = {}) { this.ready(); return this.request('episodeList', { ...input, now: this.options.now?.() }); }
+  async sceneEvents(input: Operations['sceneEvents']['input']) { this.ready(); return this.request('sceneEvents', { ...input, now: this.options.now?.() }); }
+  async readScene() { this.ready(); return this.request('readScene', { now: this.options.now?.() }); }
   async acknowledgeScene(version: number) { this.ready(); return this.request('acknowledgeScene', { version }); }
   async getDialogue(id: string) { this.ready(); validateId(id); return this.request('getDialogue', { id }); }
+  async dialogueExchange(id: string) { this.ready(); validateId(id); return this.request('dialogueExchange', { id }); }
   async hasDialogue(id: string) { this.ready(); validateId(id); return this.request('hasDialogue', { id }); }
   async readAttention() { this.ready(); return this.request('readAttention', {}); }
   async writeAttention(input: Operations['writeAttention']['input']) { this.ready(); return this.request('writeAttention', input); }

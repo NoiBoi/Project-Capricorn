@@ -1,3 +1,4 @@
+import type { WatchCondition } from './attention';
 import type { CanonicalState, StateWrite, StateSearch, EvidenceBlob, EvidenceRetention } from './canonicalState';
 import type { ConversationPage, RecordInput } from './cognitiveContracts';
 import type { Observation } from './contracts';
@@ -9,11 +10,16 @@ export interface DialogueEvidence { id: string; at: number; kind: 'user' | 'assi
 export interface DiscoveryQuery extends ArchiveQuery {
   offset?: number; source?: string; modality?: Observation['modality'] | 'dialogue'; relatedId?: string;
 }
+export interface Episode { id: number; endSequence: number; startedAt: number; lastActivityAt: number; observations: number }
+export interface SceneWindow { after: number; through: number; recorded: number; retained: number; firstAt: number | null; lastAt: number | null }
 export interface ArchiveStats { count: number; oldest?: Observation; newest?: Observation }
 export interface Operations {
-  discover: { input: DiscoveryQuery; output: { hits: ({ observation: Observation; score: number | null; contentHash: string } | { dialogue: DialogueEvidence; score: number | null })[]; nextOffset: number | null; ranking: string } };
+  dialogueExchange: { input: { id: string }; output: import('./cognitiveContracts').ConversationRecord[] };
+  discover: { input: DiscoveryQuery; output: { hits: ({ observation: Observation; score: number | null; tier: number; contentHash: string } | { dialogue: DialogueEvidence; score: number | null; tier: number })[]; nextOffset: number | null; ranking: string } };
+  episodeList: { input: { source?: string; from?: number; to?: number; before?: number; now?: number }; output: Episode[] };
+  sceneEvents: { input: { after: number; through: number; limit: number; latest?: boolean; source?: string; now?: number; watchStartedAt?: number }; output: { events: { sequence: number; observation?: Observation; conditions?: WatchCondition[] }[]; nextAfter: number | null } };
   latestSource: { input: { slot: string }; output: Observation | undefined };
-  readScene: { input: Record<string, never>; output: { cursor: number; version: number; latest: Observation[]; changes: Observation[]; recent: Observation[] } };
+  readScene: { input: { now?: number }; output: { cursor: number; version: number; latest: Observation[]; changes: Observation[]; recent: Observation[]; coverage: SceneWindow; episode?: Episode } };
   acknowledgeScene: { input: { version: number }; output: null };
   getDialogue: { input: { id: string }; output: DialogueEvidence | null };
   hasDialogue: { input: { id: string }; output: boolean };
@@ -31,7 +37,7 @@ export interface Operations {
   appendConversation: { input: RecordInput; output: { sequence: number } };
   clearConversation: { input: Record<string, never>; output: null };
   initialize: { input: { profile: string; retention: RetentionPolicy; evidenceRetention?: EvidenceRetention; now?: number }; output: { threadId: number } };
-  write: { input: { observation: Observation; now?: number }; output: { inserted: boolean } };
+  write: { input: { observation: Observation; now?: number; conditions?: readonly WatchCondition[] }; output: { inserted: boolean } };
   recent: { input: ArchiveQuery; output: Observation[] };
   restore: { input: Record<string, never>; output: Observation[] };
   get: { input: { id: string }; output: Observation | undefined };

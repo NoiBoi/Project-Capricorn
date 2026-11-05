@@ -26,6 +26,28 @@ async function fixture(p = provider(), options = {}) {
   return { a, create, loop, events, profile };
 }
 async function idle(loop: CognitiveLoop) { await expect.poll(() => loop.state.busy).toBe(false); }
+it('explains a rejected checkpoint so the next tool call can save it correctly', async () => {
+  let round = 0;
+  const p = provider(async (_model, input) => {
+    round++;
+    const checkpoint = { id: round === 1 ? 'calibration-log' : 'working-checkpoint', kind: 'checkpoint',
+      provenance: 'model-interpretation', text: 'Compare later revisions against Version A.',
+      evidence: [], status: 'active', dueAt: null, expectedRevision: 0 };
+    if (round === 1) {
+      expect(input.tools.find(tool => tool.name === 'write_memory')?.description).toContain('id exactly working-checkpoint');
+    } else if (round === 2) {
+      expect(input.records.find(record => record.kind === 'tool-result')).toMatchObject({
+        receipt: { outcome: 'failed', detail: expect.stringContaining('Use working-checkpoint, model-interpretation') },
+      });
+    } else return { text: '', calls: [] };
+    return { text: '', calls: [{ id: 'checkpoint-' + round, name: 'write_memory', arguments: JSON.stringify(checkpoint) }] };
+  });
+  const { a, loop } = await fixture(p, { ambientMs: 60000 });
+  await loop.send('Follow the calibration log.');
+  await idle(loop);
+  expect(round).toBe(3);
+  expect(await a.findState({ kind: 'checkpoint' })).toMatchObject([{ id: 'working-checkpoint', revision: 1 }]);
+});
 it('persists dialogue, stable identity and exact chronology across worker restart', async () => {
   const p = provider(async (_m, _i, _s, delta) => { delta('Hello'); return { text: 'Hello', calls: [] }; });
   const { a, create, loop, events } = await fixture(p);
@@ -76,7 +98,7 @@ it('direct messages bypass the ambient delay and provider failures preserve them
   const failure = events.find(e => e.payload.phase === 'error')!.payload.detail;
   expect(failure).toContain('subscription_sharing_usage_limit_exceeded'); expect(failure).toContain('429'); expect(failure).not.toContain('secret');
 });
-it('records failed argument validation and unknown tools as actual failed receipts', async () => {
+it('records failed argument validation and denies unoffered tools', async () => {
   let calls = 0;
   const p = provider(async () => ++calls === 1 ? { text: '', calls: [
     { id: 'bad1', name: 'search_observations', arguments: '{"limit":9999}' },
@@ -85,7 +107,7 @@ it('records failed argument validation and unknown tools as actual failed receip
   const { a, loop } = await fixture(p);
   await loop.send('Investigate'); await idle(loop);
   const results = (await a.conversation()).records.filter(r => r.kind === 'tool-result');
-  expect(results).toHaveLength(2); expect(results.every(r => r.kind === 'tool-result' && r.receipt.outcome === 'failed')).toBe(true);
+  expect(results).toHaveLength(2); expect(results.map(r => r.kind === 'tool-result' && r.receipt.outcome)).toEqual(['failed','denied']);
 });
 it('bounds sequential tool rounds and records a denied receipt for calls beyond the limit', async () => {
   let calls = 0; const p = provider(async () => ({ text: '', calls: [{ id: 'bounded' + ++calls, name: 'get_archive_statistics', arguments: '{}' }] }));
@@ -144,7 +166,7 @@ it('migrates an actual Phase 2 schema without changing original observations and
   original.id = 'x'.repeat(256);
   await a.write(original); await a.close();
   // Remove only Phase 3 tables in a worker, recreating the Phase 2 on-disk schema.
-  const worker = new Worker(`const {workerData}=require('node:worker_threads'); const {DatabaseSync}=require('node:sqlite'); const db=new DatabaseSync(workerData); db.exec('DROP TRIGGER scene_delete; DROP TABLE scene_sources; DROP TABLE conversation_records; DROP TABLE logical_conversation; PRAGMA user_version=1;'); db.close();`, { eval: true, workerData: path.join(profile, 'runtime2', 'experience.sqlite') });
+  const worker = new Worker(`const {workerData}=require('node:worker_threads'); const {DatabaseSync}=require('node:sqlite'); const db=new DatabaseSync(workerData); db.exec('DROP TRIGGER scene_delete; DROP TABLE scene_sources; DROP TABLE activity_episodes; DROP TABLE conversation_records; DROP TABLE logical_conversation; PRAGMA user_version=1;'); db.close();`, { eval: true, workerData: path.join(profile, 'runtime2', 'experience.sqlite') });
   await new Promise<void>((resolve,reject) => { worker.once('exit', code => code === 0 ? resolve() : reject(Error('Fixture worker failed'))); worker.once('error',reject); });
   const b = await create(); expect(await b.get(original.id)).toEqual(original);
   expect((await b.conversation()).records).toMatchObject([{ kind: 'observation', observationId: original.id, observation: original }]);
@@ -158,7 +180,7 @@ it('keeps ambient observations arriving during inference pending for the next op
   let release!: () => void; let calls = 0;
   const p = provider(async () => { if (++calls === 1) await new Promise<void>(resolve => { release = resolve; }); return { text: '', calls: [] }; });
   const { loop } = await fixture(p); loop.notifyObservation(); await expect.poll(() => calls).toBe(1);
-  loop.notifyObservation(); loop.notifyObservation(); release();
+  loop.notifyObservation(true); loop.notifyObservation(); release();
   await expect.poll(() => calls).toBe(2); await idle(loop); expect(calls).toBe(2);
 });
 it('bounds a request with a timeout, preserving the user record', async () => {

@@ -1,3 +1,4 @@
+import { physicalRestDestination } from './desktop/physicalGeometry';
 import { chromeSiteAllowed } from '../shared/lifeContext';
 import type { DesktopHost, DisclosureMode } from './runtime2/perception';
 import type { Observation as RuntimeObservation } from './runtime2/contracts';
@@ -110,6 +111,7 @@ import { DesktopVisits, PhysicalCueGate, besideCursor } from '../shared/desktopV
 import type { ActionContext } from './actions/registry';
 import { createCharacterWindow, createPanelWindow, characterSize, displaysNow, capriIconPath, DragController, OFFSCREEN, reveal, conceal, shown } from './windows';
 import { clampToDisplays } from './desktop/displays';
+import { PhysicalBehavior, type PhysicalIntent } from './desktop/physicalBehavior';
 import { foregroundHandle, foregroundRect, windowRect, handleToBigint, isOtherAppFullscreen, loadWin32, win32Status, externalWindows, leftButtonDown, chatChordDown, activateChatWindow, restoreChatFocus } from './desktop/win32';
 import { snapWindow, windowAttachment, attachToWindow, INVERTED_SEAT_RATIO, type PerchWindow } from './desktop/perch';
 import { MOODS, LIFE_EVENTS, type Mood, type LifeEvent } from '../shared/personality';
@@ -312,6 +314,10 @@ let startupMs = 0;
 let characterReady: (() => void) | null = null;
 let monitor: ConnectionMonitor;
 let teleporter: TeleportController;
+let physicalBehavior: PhysicalBehavior | undefined;
+let physicalHome: DRect | null = null;
+let physicalReaction: {id:number;emotion:string;status:'dispatched'|'completed'|'interrupted'} | null = null;
+let physicalReactionSequence=1000000000;
 let memoryLearner: MemoryLearning;
 let perchRect: DRect | null = null;
 let perchHandle: bigint | null = null;
@@ -448,11 +454,13 @@ async function sitOnWindow(w = windowBesidePet()) {
   } finally { pendingPerch = null; pendingPerchFraction = undefined; pendingPerchMode = undefined; }
 }
 async function userTeleport(target:TeleportTarget,_reason?:'manual') {
+  physicalBehavior?.cancel('Explicit user movement.');
   agency?.cancelWhere(i=>['stay_at_window','hold_position'].includes(i.skill),'user requested native movement');stopAgencyMovement();
   for(let n=0;n<60&&teleporter.active;n++)await new Promise(r=>setTimeout(r,50));
   return teleporter.go(target,'manual');
 }
 async function userSitOnWindow(w=windowBesidePet()) {
+  physicalBehavior?.cancel('Explicit user placement.');
   agency?.cancelWhere(i=>['stay_at_window','hold_position'].includes(i.skill),'user selected a perch');stopAgencyMovement();
   for(let n=0;n<60&&teleporter.active;n++)await new Promise(r=>setTimeout(r,50));
   return sitOnWindow(w);
@@ -492,7 +500,8 @@ function sendSurface(force = false) {
   const handle = perchHandle ?? bottom?.handle;
   const support = perchMoving || fallTimer || drag?.active || teleporter?.active ? { sit: false, lie: false, kind: 'none' as const }
     : restSupport(b, area, perchRect ? { rect: perchRect, inverted: perchMode === 'inverted', reclining: perchReclining } : null, windows.map(w => w.rect), r => !handle || !blockersFor(handle).some(w => r.x < w.x + w.width && r.x + r.width > w.x && r.y < w.y + w.height && r.y + r.height > w.y));
-  const landing = landingRest.phase(Date.now(), support);
+  const preferred=physicalBehavior?.snapshot().intention?.posture;
+  const landing = preferred==='lie'&&support.lie ? 'lie' : preferred==='stand'&&support.sit ? 'stand' : preferred==='sit'&&support.sit ? 'sit' : landingRest.phase(Date.now(), support);
   const supported = {...support,...(landing?{landing}:{}),sustainedRest: ['taskbar','window_bottom'].includes(support.kind)&&Date.now()<loungeUntil};
   const key = JSON.stringify(supported);
   currentPoseSupport = supported;
@@ -693,33 +702,33 @@ async function init() {
       active: () => { const handle = TEST && (globalThis as any).__capriForegroundHandle !== undefined ? (globalThis as any).__capriForegroundHandle as bigint : foregroundHandle(); return handle && !ownHandles().includes(handle) ? String(handle) : null; },
       allowed: (operation, observation, mode) => runtime2Allowed(operation, observation, mode),
       browserStatus: () => life.chrome.preflight(),
+      requestBrowserPage: signal => life.chrome.requestPage(signal),
       capture: async (handle, signal) => { signal.throwIfAborted(); return captureWindowObservation(BigInt(handle)); },
-      move: async (target, handle, signal) => {
-        signal.throwIfAborted(); if (!runtime2Allowed('move')) return { ok: false, detail: 'Native movement is currently unavailable or denied.' };
-        const abort = () => teleporter.cancel(); signal.addEventListener('abort', abort, { once: true });
-        try {
-          if (handle) {
-            const known = agencyWindows().find(w => String(w.handle) === handle); if (!known) return { ok: false, detail: 'Target window is no longer available.' };
-            return await moveToWindow(known.title, 'teleport', signal, known.handle);
-          }
-          const result = await teleporter.go(target === 'idle' ? 'corner' : target, 'ai');
-          const bounds = charWin && !charWin.isDestroyed() ? herBounds() : null;
-          return { ...result, ok: result.ok && !!bounds && !!result.to && Math.abs(bounds.x - result.to.x) < 4 && Math.abs(bounds.y - result.to.y) < 4, actualBounds: bounds };
-        } finally { signal.removeEventListener('abort', abort); }
+      react: async (emotion, signal) => {
+        signal.throwIfAborted();
+        if (!runtime2Allowed('move') || !charWin || charWin.isDestroyed()) return { ok: false, detail: 'Character expression unavailable or denied.' };
+        physicalReaction={id:++physicalReactionSequence,emotion,status:'dispatched'};
+        cue({ type: 'clip', name: emotion, performanceId:physicalReaction.id });
+        return { ok: true, detail: 'Expression dispatched to character renderer; physical completion unconfirmed.' };
+      },
+      move: async (target, handle, signal, intent) => {
+        signal.throwIfAborted();
+        return physicalBehavior ? physicalBehavior.request(intent ?? {target,handle,posture:'auto',pace:'gentle'},signal)
+          : {ok:false,detail:'Physical controller is not ready.'};
       },
       retentionDeadline: observation => observation.at + (observation.disclosure?.source === 'chrome' ? life.ledger.source('chrome')?.retentionDays ?? 1 : 7) * 86400000,
-      body: () => ({ bounds: charWin && !charWin.isDestroyed() ? herBounds() : null, perchedWindow: perchHandle ? String(perchHandle) : null, moving: !!teleporter?.active, carried: !!drag?.active }),
+      body: () => ({ bounds: charWin && !charWin.isDestroyed() ? herBounds() : null, perchedWindow: perchHandle ? String(perchHandle) : null, moving: !!teleporter?.active, carried: !!drag?.active, surface: currentPoseSupport.kind, support: currentPoseSupport, pinned: perchPinned, rendered: lastPoseRenderer, physical: physicalBehavior?.snapshot(), reaction:physicalReaction }),
     };
     runtime2ChatGPT = createDesktopChatGPT(dir);
     if (process.env.CAPRI_V2_DAILY === '1') runtime2Daily = new DailySession(dir);
     runtime2ChatGPT.subscribe(session => toPanel('connection:status', siwcConnection(session, runtime2Daily?.config.model || process.env.CAPRI_V2_MODEL)));
     runtime2 = new Runtime2(actionCtx, `capricorn2:${createHash('sha256').update(dir.toLowerCase()).digest('hex').slice(0, 24)}`, dir, {}, {
-      provider: new SiwcProvider(runtime2ChatGPT, runtime2Daily), options: { model: process.env.CAPRI_V2_MODEL, daily: runtime2Daily,
+      provider: new SiwcProvider(runtime2ChatGPT, runtime2Daily), options: { model: process.env.CAPRI_V2_MODEL, daily: runtime2Daily, cognition: process.env.CAPRI_V2_COGNITION as import('./runtime2/cognitiveLoop').CognitionMode | undefined,
         contextBudget: Number(process.env.CAPRI_V2_CONTEXT_TOKENS ?? 100_000), ambientMs: Math.max(10000, Number(process.env.CAPRI_V2_AMBIENT_MS ?? (runtime2Daily ? 180_000 : 30_000))), host, emit: toPanel },
     });
     await runtime2.initialize(listener => windowFocusSource.subscribe(listener));
     await life.enableRawChrome(async (page, intake) => {
-      if (!runtime2!.attention?.sample('chrome')) return false;
+      if (!life.chrome.isRequestedRead(page.readRequestId) && !runtime2!.attention?.sample('chrome')) return false;
       if (!runtime2Allowed('collect', { disclosure: { source: 'chrome', url: page.url } } as RuntimeObservation)) return false;
       try { await runtime2!.acceptPage(page, intake); return true; } catch { log.warn('Runtime 2 page archive unavailable'); return false; }
     });
@@ -805,7 +814,7 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
       // remember the window she's sitting on so she can react if it moves or closes
       if (dest.kind === 'perch') {
         const w = pendingPerch ?? windowsForPlacement().find((w) => Math.abs(w.rect.y - (dest.y + dest.height * SEAT_RATIO)) < 8);
-        if (w) attachPerch(w, !tourRunning && !!pendingPerch, pendingPerchFraction, pendingPerchMode); else detachPerch();
+        if (w) attachPerch(w, !tourRunning && !!pendingPerch && !physicalBehavior?.snapshot().executing, pendingPerchFraction, pendingPerchMode); else detachPerch();
       } else { detachPerch(); attentionHandle = pendingPerch?.handle ?? null; }
       savePosition();
       sendSurface();
@@ -819,7 +828,7 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
     },
     prepareFlight: async(how)=>{
       const wasAttached=!!perchHandle||!!lowerAnchor;
-      detachPerch();sendSurface(true);cue({type:'surface',surface:'air'});
+      detachPerch();sendSurface(true);lastSurface='air';cue({type:'surface',surface:'air'});
       if(wasAttached&&how!=='teleport')await new Promise(resolve=>setTimeout(resolve,180));
     },
     arrived: (dest, reason) => { arrivalRemark(reason); if (dest.kind === 'peek_left' || dest.kind === 'peek_right') cue({ type:'flourish',kind:'peek',side:dest.kind==='peek_left'?1:-1 }); },
@@ -839,6 +848,26 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
     log,
   });
 
+  if (experimental) physicalBehavior = new PhysicalBehavior({
+    blocked: physicalBlocked,
+    busy: () => !!teleporter?.active,
+    active: () => { const h = TEST ? (globalThis as any).__capriForegroundHandle : foregroundHandle(); return h && !ownHandles().includes(h) ? String(h) : undefined; },
+    targetValid: handle => agencyWindows().some(w => String(w.handle) === handle && !company.avoiding(handle)),
+    targetIdentity: handle => { const w=agencyWindows().find(w=>String(w.handle)===handle); return w?JSON.stringify([w.process,w.pid??w.title]):undefined; },
+    watch: handle => { const h=BigInt(handle); if(trackedWindowFor(h))watchWindow(h,6); },
+    obstructed: () => !!charWin && !charWin.isDestroyed() && (!movementClear(herBounds()) || !!perchHandle && !safeForTarget(herBounds(),perchHandle)),
+    execute: executePhysicalIntent,
+    cancel: () => teleporter.cancel(),
+    posture: applyPhysicalPosture,
+    ambient: variation => {
+      if(!settings.get().behavior.smallActivities||bubble.state.composer||physicalReaction?.status==='dispatched')return;
+      sendSurface();
+      const preference = physicalBehavior?.snapshot().intention?.posture;
+      if (preference && preference !== 'auto') applyPhysicalPosture(preference);
+      else if(currentPoseSupport.sit)applyPhysicalPosture(variation===0?'stand':variation===2&&currentPoseSupport.lie?'lie':'sit');
+      if(!preference||preference==='auto')cue({type:'activity',kind: currentPoseSupport.sit ? (['balance','stretch','settle','fidget'] as const)[variation] : (['float','sway','stretch','settle'] as const)[variation]});
+    },
+  });
   setupPermissions();
   registerIpc();
   try { theatreCadence.restore(JSON.parse(fs.readFileSync(path.join(dir, 'theatre-cadence.json'), 'utf8')), Date.now()); } catch { /* first quiet scene */ }
@@ -948,9 +977,9 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
   screen.on('display-removed', reclampCharacter);
   screen.on('display-added', reclampCharacter);
   screen.on('display-metrics-changed', reclampCharacter);
-  powerMonitor.on('lock-screen',()=>{activityLocked=true;runtime2?.environment(true);teleporter.cancel();interactionProfile.pauseActivity('locked');});
+  powerMonitor.on('lock-screen',()=>{activityLocked=true;physicalBehavior?.cancel('Desktop locked.');runtime2?.environment(true);teleporter.cancel();interactionProfile.pauseActivity('locked');});
   powerMonitor.on('unlock-screen',()=>{activityLocked=false;runtime2?.environment(suspended);});
-  powerMonitor.on('suspend', () => { suspended=true;runtime2?.environment(true); interactionProfile.pauseActivity('suspend'); stopAgencyMovement(); for(const i of agency.active('stay_at_window'))agency.recover(i.id); observeAgency(); });
+  powerMonitor.on('suspend', () => { suspended=true;physicalBehavior?.cancel('Computer suspended.');runtime2?.environment(true); interactionProfile.pauseActivity('suspend'); stopAgencyMovement(); for(const i of agency.active('stay_at_window'))agency.recover(i.id); observeAgency(); });
   powerMonitor.on('resume', () => { suspended=false; runtime2?.environment(activityLocked); reminders.tick(); reclampCharacter(); observeAgency();agency.tick(); void monitor.check('resume'); });
 
   if (runtime2Daily) setTimeout(() => openPanel('chat'), 800);
@@ -962,7 +991,7 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
   else if (!TEST && process.argv.includes('--minimize-capri')) setTimeout(() => taskbar?.command('minimize'), 800);
   else if (!TEST && process.argv.includes('--replay-intro')) setTimeout(() => { if (!opening.active) playOpening(); }, 800);
   if(TEST)(globalThis as any).__capriVisits={desktopVisits,physicalCues,taskbarVisit,adjustWithinWindow,recordDragOrigin,musicChanges,get lowerAnchor(){return lowerAnchor;},get localVisitActive(){return localVisitActive;}};
-  if (TEST) (globalThis as Record<string, unknown>).__capri = { runtime2, runtimeSelection, windowFocusSource, buildDiagnosticSnapshot, diagnosticTraces, activateChatWindow, openLongTermChat, openCompanion, cognitiveRuntime, modelSessions, performanceDirector, performanceFeedback, dialogueCognition, agency, agencyHost, observeAgency, maintainAgency, cognitiveStore, get landingRest() { return landingRest; }, get falling() { return !!fallTimer; }, get theatre() { return theatre; }, runTheatre, theatreFrame, get teleporter() { return teleporter; }, get monitor() { return monitor; }, settings, convo, history, memory, honcho, life, relationship, personalContext, retiredLines, memoryLearner, conversationScene, get behavior() { return behavior; }, interactionProfile, notes, reminders, secrets, get charWin() { return charWin; }, get panelWin() { return panelWin; }, get developerWin() { return developerWin; }, bubble, get startupMs() { return startupMs; }, get speakCount() { return speakCount; }, generatedRemark, captureWindowObservation, visibleObservationWindows, sharedSceneContext, reactToOwnPanel, dropPerch, dropLower, placement, environmentalCuriosity, get lastInspection() { return lastInspection; }, get lastDialogueOutcome() { return lastDialogueOutcome; }, scenes, presentRemark, curiosityDetour, get curiosityActive() { return curiosityActive; }, outings, companionDialogue, interaction, pickupReaction, localDialogueContext, localActivity, gameActive, raiseTick, get exploringHandle() { return exploringHandle; }, get tourStage() { return tourStage; }, desktopWindows, safeForTarget, setNextVisit() { nextWindowVisit = 0; }, presenceTick, settleAfterDrop, throwCharacter, useComputer, exploreTick, get throwing() { return !!throwTimer; }, get attentionHandle() { return attentionHandle; }, get perchMode() { return perchMode; }, get nextWindowVisit() { return nextWindowVisit; }, systemIdleSec, perchTick, activities, favoriteSpots, cursorReturn, returnToCursor, setCursorIdle: (seconds: number) => { lastCursorMovedAt = Date.now() - seconds * 1000; }, pendingConfirms, log, get opening() { return opening; }, get taskbar() { return taskbar; }, playOpening, minimizeCapri, restoreCapri, company, visit, applyCompanyControl, presenceDebug: () => ({ target: String(lastDesktopHandle), desktop: lastDesktop, tracked: !!trackedWindowFor(lastDesktopHandle), request: !!behavior?.busy, revision: placementRevision, watched: String(watchedHandle), encounter: encounters.current }) };
+  if (TEST) (globalThis as Record<string, unknown>).__capri = { runtime2, runtimeSelection, get physicalBehavior() { return physicalBehavior; }, windowFocusSource, buildDiagnosticSnapshot, diagnosticTraces, activateChatWindow, openLongTermChat, openCompanion, cognitiveRuntime, modelSessions, performanceDirector, performanceFeedback, dialogueCognition, agency, agencyHost, observeAgency, maintainAgency, cognitiveStore, get landingRest() { return landingRest; }, get falling() { return !!fallTimer; }, get theatre() { return theatre; }, runTheatre, theatreFrame, get teleporter() { return teleporter; }, get monitor() { return monitor; }, settings, convo, history, memory, honcho, life, relationship, personalContext, retiredLines, memoryLearner, conversationScene, get behavior() { return behavior; }, interactionProfile, notes, reminders, secrets, get charWin() { return charWin; }, get panelWin() { return panelWin; }, get developerWin() { return developerWin; }, bubble, get startupMs() { return startupMs; }, get speakCount() { return speakCount; }, generatedRemark, captureWindowObservation, visibleObservationWindows, sharedSceneContext, reactToOwnPanel, dropPerch, dropLower, placement, environmentalCuriosity, get lastInspection() { return lastInspection; }, get lastDialogueOutcome() { return lastDialogueOutcome; }, scenes, presentRemark, curiosityDetour, get curiosityActive() { return curiosityActive; }, outings, companionDialogue, interaction, pickupReaction, localDialogueContext, localActivity, gameActive, raiseTick, get exploringHandle() { return exploringHandle; }, get tourStage() { return tourStage; }, desktopWindows, safeForTarget, setNextVisit() { nextWindowVisit = 0; }, presenceTick, settleAfterDrop, throwCharacter, useComputer, exploreTick, get throwing() { return !!throwTimer; }, get attentionHandle() { return attentionHandle; }, get perchMode() { return perchMode; }, get nextWindowVisit() { return nextWindowVisit; }, systemIdleSec, perchTick, activities, favoriteSpots, cursorReturn, returnToCursor, setCursorIdle: (seconds: number) => { lastCursorMovedAt = Date.now() - seconds * 1000; }, pendingConfirms, log, get opening() { return opening; }, get taskbar() { return taskbar; }, playOpening, minimizeCapri, restoreCapri, company, visit, applyCompanyControl, presenceDebug: () => ({ target: String(lastDesktopHandle), desktop: lastDesktop, tracked: !!trackedWindowFor(lastDesktopHandle), request: !!behavior?.busy, revision: placementRevision, watched: String(watchedHandle), encounter: encounters.current }) };
 }
 
 // ---------------------------------------------------------------- desktop-pet handling: drop onto a ledge, throw
@@ -1139,6 +1168,7 @@ function savePosition() {
 }
 
 function reclampCharacter() {
+  physicalBehavior?.cancel('Display arrangement changed.');
   if (!charWin || charWin.isDestroyed()) return;
   const b = herBounds();
   const c = clampToDisplays(b, displaysNow());
@@ -1460,7 +1490,7 @@ function updateAttention() {
 let lastCompanionEvent: LifeEvent | null = null;
 let lastCompanionEventAt = 0;
 function interaction(kind: 'pat' | 'poke') {
-  if (experimental) return;
+  if (experimental) { physicalBehavior?.cancel('Direct user contact.'); lastInteraction=Date.now(); cue({type:'life',event:kind}); return; }
   cognitiveRuntime.preempt(kind,0);
   if(touchBurstTimer){clearTimeout(touchBurstTimer);touchBurstTimer=null;}
   theatre?.cancel();
@@ -2395,6 +2425,7 @@ async function executeReturnToCursor(from: 'idle' | 'sleep') {
 function beginCharacterDrag() {
   if (developer.active) { void developer.stop(); return; }
   if (farewell?.active || drag.active || opening?.active || userHidden || fullscreenHidden || agentCtrl) return;
+  physicalBehavior?.cancel();
   drag.begin(); // The 4-DIP movement threshold owns detachment, not a click.
 }
 let chatChordHeld=false;
@@ -2420,7 +2451,7 @@ function cursorTick() {
 function fullscreenTick() {
   if (!charWin || userHidden) return;
   const fs_ = isFullscreenNow();
-  if (fs_ && !fullscreenHidden) { fullscreenHidden = true; setCharacterVisible(false); log.info('hidden for fullscreen app'); }
+  if (fs_ && !fullscreenHidden) { physicalBehavior?.cancel('Fullscreen application.'); fullscreenHidden = true; setCharacterVisible(false); log.info('hidden for fullscreen app'); }
   else if (!fs_ && fullscreenHidden) { fullscreenHidden = false; setCharacterVisible(true); }
 }
 // Always-on-top windows share one topmost band, and a freshly activated app (seen with Windows
@@ -2436,7 +2467,7 @@ function raiseTick() {
   const fg = TEST && (globalThis as any).__capriForegroundHandle !== undefined ? (globalThis as any).__capriForegroundHandle as bigint : foregroundHandle();
   if (fg !== lastFg) {
     lastFg = fg; raiseCharacter();
-    if (gameActive()) { cancelBehavior(); cue({ type: 'stopSpeech' }); }
+    if (gameActive()) { physicalBehavior?.cancel('Gaming restriction.'); cancelBehavior(); cue({ type: 'stopSpeech' }); }
     // Focusing the app she is visiting is not a reason to flee; exposure checks
     // handle actual covers and the visit continues on visible parts of that app.
   }
@@ -2832,10 +2863,69 @@ function visibleObservationWindows(now=Date.now()) {
   observationWindowsCache=windowsForPlacement().filter(w=>exposedRegions(w.rect,blockersFor(w.handle)).some(r=>r.width>=160&&r.height>=100)).slice(0,24).map(w=>{const info=observedWindow(w.handle);return {id:String(w.handle),key:explorationKey(info),label:info.process+': '+info.title,semantic:/chrome/i.test(info.process)&&life.ledger.displayedPage(info.title)&&life.ledger.developmentSections(life.ledger.displayedPage(info.title)!).length?life.ledger.semanticFingerprint(info.title):'',video:videoWindow(info)};});
   return observationWindowsCache;
 }
+/** Shared host restrictions apply both before admission and throughout native travel. */
+function physicalBlocked(): string | null {
+  const s=settings.get();
+  return quitting||suspended||activityLocked ? 'Desktop unavailable' : !charWin||charWin.isDestroyed() ? 'Character unavailable'
+    : s.actions.policies.teleport!=='allow' ? 'Movement permission denied' : drag?.active ? 'User is carrying Capri'
+    : perchPinned ? 'User-pinned position' : throwTimer||fallTimer||perchMoving ? 'Physical recovery has priority'
+    : userHidden||fullscreenHidden||gameActive() ? 'Hidden, fullscreen or gaming restriction'
+    : s.behavior.mode==='sleep'||s.behavior.doNotDisturb||!mayInterrupt(s,{fullscreen:fullscreenHidden,hidden:userHidden}) ? 'Sleep or quiet mode'
+    : company.blocked()||company.focused()||company.staying||agency?.movementHeld() ? 'User stay or focus commitment'
+    : developer.active||opening?.active||farewell?.active||recording||agentCtrl ? 'Direct activity has priority' : null;
+}
+function applyPhysicalPosture(posture: PhysicalIntent['posture']) {
+  sendSurface();
+  const allowed = posture==='lie' ? currentPoseSupport.lie : posture==='sit'||posture==='stand' ? currentPoseSupport.sit : false;
+  if(allowed) cue({type:'clip',name:posture==='lie'?'recline':posture==='sit'?'sit':'stand'});
+  else if(posture==='hover'&&currentPoseSupport.kind==='none')cue({type:'activity',kind:'float'});
+}
+async function executePhysicalIntent(intent: PhysicalIntent, signal: AbortSignal) {
+  signal.throwIfAborted();
+  const blocked=physicalBlocked();if(blocked)return {ok:false,detail:blocked};
+  const before=herBounds(), home=physicalHome;
+  const valid=()=>!signal.aborted&&!physicalBlocked();
+  const abort=()=>teleporter.cancel();signal.addEventListener('abort',abort,{once:true});
+  try {
+    let result:{ok:boolean;detail:string;to?:DRect};
+    if(intent.handle) {
+      const w=agencyWindows().find(w=>String(w.handle)===intent.handle);
+      if(!w)return {ok:false,detail:'Target window is no longer available.'};
+      const identity={process:w.process,pid:w.pid};
+      const destination=()=>{
+        const latest=agencyWindows().find(x=>x.handle===w.handle&&x.process===identity.process&&x.pid===identity.pid);
+        if(!latest||!valid())return null;
+        const p=placement(latest);
+        return safeForTarget(p.bounds,w.handle)?{...p.bounds,kind:'perch' as const}:null;
+      };
+      const dest=destination();if(!dest)return {ok:false,detail:'No safe exposed window edge.'};
+      pendingPerch=w;pendingPerchFraction=placement(w).fraction;pendingPerchMode=placement(w).mode;
+      try {
+        const ok=await teleporter.jumpTo(destination,undefined,()=>!valid());
+        result={ok,detail:ok?'Host placed Capri on the validated window edge.':'Window placement interrupted.',to:dest};
+      } finally {pendingPerch=null;}
+    } else if(['taskbar','settle','idle','return'].includes(intent.target)) {
+      if(intent.target==='return'&&!home)return {ok:false,detail:'No prior host-confirmed position is available.'};
+      const dest=physicalRestDestination(before,displaysNow(),intent.target==='return'?home:null);
+      const ok=await teleporter.flyTo(dest,{gentle:intent.pace==='gentle',silent:true,cancelled:()=>!valid()});
+      result={ok,detail:ok?'Host reached the resting position.':'Resting movement interrupted or obstructed.',to:dest};
+    } else {
+      const target=intent.target==='follow_cursor'?'near_cursor':intent.target==='away'?'corner':intent.target==='accompany'?'perch':intent.target;
+      if(target==='cancel')return {ok:false,detail:'Cancellation has no destination.'};
+      result=await teleporter.go(target as TeleportTarget,'ai','either');
+    }
+    signal.throwIfAborted();
+    const actual=herBounds();sendSurface();
+    // A native landing and a rendered posture are separate observations.
+    const ok=result.ok&&valid()&&!!result.to&&Math.abs(actual.x-result.to.x)<4&&Math.abs(actual.y-result.to.y)<4;
+    if(ok)physicalHome=before;
+    return {...result,ok,actualBounds:actual,support:currentPoseSupport,postureRequested:intent.posture,postureSupported:intent.posture==='auto'||intent.posture==='lie'?intent.posture==='auto'||currentPoseSupport.lie:intent.posture==='hover'?currentPoseSupport.kind==='none':currentPoseSupport.sit,rendered:lastPoseRenderer};
+  } finally {signal.removeEventListener('abort',abort);}
+}
 function runtime2Allowed(operation: Parameters<DesktopHost['allowed']>[0], observation?: RuntimeObservation, mode: DisclosureMode = 'direct') {
   const s = settings.get();
   if (quitting || suspended || activityLocked) return false;
-  if (operation === 'move') return s.actions.policies.teleport === 'allow' && !drag?.active && !teleporter?.active && !throwTimer && !fallTimer && !perchMoving && !userHidden && !fullscreenHidden && !gameActive() && !company.blocked() && !agency?.movementHeld() && s.behavior.mode !== 'sleep';
+  if (operation === 'move') return !physicalBlocked();
   if (operation === 'conversation') return s.privacy.saveHistory;
   if (operation === 'state') return s.memory.enabled && s.privacy.saveHistory;
   if (!observation && operation === 'disclose') return s.privacy.saveHistory && (mode === 'direct' || s.behavior.mode !== 'sleep' && !s.behavior.doNotDisturb);
@@ -2856,6 +2946,10 @@ let previousUserIdle = 0;
 let activities: ActivityDirector;
 function presenceTick() {
   if (experimental) {
+    sendSurface();
+    updateAttention();
+    cue({type:'presence',idleSec:systemIdleSec(),quiet:!!physicalBlocked()});
+    void physicalBehavior?.tick().catch(error => log.debug('Local physical behavior unavailable',{error}));
     if (!TEST && runtime2?.collecting && runtime2Allowed('collect') && settings.get().dialogue.spotifyBanter) musicWatcher.start(); else musicWatcher.stop();
     if (runtime2Daily) { const state = `${runtime2Daily.paused}:${runtime2Daily.recorder.status.active}`; if (state !== runtime2DailyTrayState) { runtime2DailyTrayState = state; updateTrayMenu(); } }
     // Same Win32 collector, before legacy semantic admission or interpretation.
@@ -3398,12 +3492,12 @@ function registerIpc() {
     const session = await runtime2ChatGPT.getSession();
     return { enabled: true, status: session.status, sharing: session.sharing, account: session.identity?.email ?? session.profileLabel, model: runtime2Daily?.config.model || process.env.CAPRI_V2_MODEL };
   });
-  handle('runtime2:auth', 'panel', z.enum(['signin','enable','disconnect','cancel']), async action => {
+  handle('runtime2:auth', 'panel', z.enum(['signin','add-account','enable','disconnect','cancel']), async action => {
     if (!runtime2ChatGPT || !runtime2) throw Error('Runtime 2 is not enabled.');
     if (runtime2Daily) { runtime2DailyControlEpoch++; await runtime2.pauseDaily(); } else runtime2.stopChat();
     if (action === 'cancel') { runtime2ChatGPT.cancelSignIn(); return; }
     if (action === 'disconnect') { await runtime2ChatGPT.disconnect(); return; }
-    await runtime2ChatGPT.signIn({ reconsent: action === 'enable' });
+    await runtime2ChatGPT.signIn({ newProfile: action === 'add-account', reconsent: action === 'enable' });
   });
   handle('runtime2:models', 'panel', none, async () => {
     if (!runtime2ChatGPT) throw Error('Runtime 2 is not enabled.');
@@ -3415,6 +3509,7 @@ function registerIpc() {
     screenshotPermission: runtime2Allowed('collect') && runtime2Allowed('disclose'),
     screenshotTargets: runtime2?.perception?.host.windows().length ?? 0,
     movement: runtime2Allowed('move'),
+    attention: runtime2?.attention?.snapshot(), cognition: process.env.CAPRI_V2_COGNITION ?? 'two-speed',
     screenLocked: activityLocked || suspended,
     note: 'Permissions and targets are readiness checks. Use Check capture to verify actual pixels. Chrome last accepted delivery is separate from pairing. No microphone or call audio is recorded.',
   } } : null);
@@ -3457,8 +3552,12 @@ function registerIpc() {
         const model = models.find(m => m.id === runtime2Daily!.config.model);
         if (!model?.contextTokens || /codex|luna/i.test(model.id + ' ' + model.label)) throw Error('Select an available conversational model first.');
         if (runtime2.archiveHealth.state !== 'ready') throw Error('Experience archive is not ready.');
-        await runtime2.startDaily({ model, chrome: life.chrome.preflight(), controlledFixture: TEST });
+        const baseline = await runtime2.startDaily({ model, chrome: life.chrome.preflight(), controlledFixture: TEST });
         if (epoch !== runtime2DailyControlEpoch) { await runtime2.stopDaily(); throw Error('Daily-test startup canceled.'); }
+        return baseline?.cleanNormalAttention ? 'Diagnostic started with normal attention. Inherited task context is suspended for ambient evaluation; memories and history are preserved.'
+          : 'Diagnostic started. Prior conversation: ' + (baseline?.restored.hasPriorDialogue ? 'retained' : 'none')
+            + '. Inherited attention: ' + JSON.stringify(baseline?.restored.attention ?? 'normal')
+            + '. Active investigations: ' + (baseline?.restored.canonical.filter(s => s.kind === 'investigation').length ?? 0) + '.';
       } finally { runtime2DailyStarting = false; }
     } else if (action === 'pause') await runtime2.pauseDaily();
     else if (action === 'resume') runtime2.resumeDaily();
@@ -3686,8 +3785,8 @@ function registerIpc() {
     log.warn('microphone error', { msg });
     toPanel('chat:phase', { phase: 'error', detail: `Microphone error: ${msg}` });
   });
-  handle('char:performance','char',z.object({id:z.number().int().positive(),status:z.enum(['completed','interrupted'])}).strict(),result=>performanceDirector.animationResult(result.id,result.status));
-  handle('char:poseRenderer', 'char', z.object({ pose: z.enum(SECONDARY_POSES).nullable(), shader: z.boolean(), reduced: z.boolean(), motion: z.number().min(0).max(3), mood: z.enum(MOODS).optional(), clip: z.string().max(80).optional(), phase: z.enum(DEV_PHASES).optional(), attachment: z.string().max(40).nullable().optional() }).strict(), state => { lastPoseRenderer = state; });
+  handle('char:performance','char',z.object({id:z.number().int().positive(),status:z.enum(['completed','interrupted'])}).strict(),result=>{ if(physicalReaction?.id===result.id)physicalReaction.status=result.status; else performanceDirector.animationResult(result.id,result.status); });
+  handle('char:poseRenderer', 'char', z.object({ pose: z.enum(SECONDARY_POSES).nullable(), shader: z.boolean(), reduced: z.boolean(), motion: z.number().min(0).max(3), mood: z.enum(MOODS).optional(), clip: z.string().max(80).optional(), phase: z.enum(DEV_PHASES).optional(), attachment: z.string().max(40).nullable().optional(), posture:z.string().max(80).optional(),primaryPose:z.string().max(80).optional() }).strict(), state => { lastPoseRenderer = state; });
   handle('char:fps', 'char', z.number().min(0).max(1000), (fps) => { lastFps = fps; });
   handle('char:ready', 'char', none, () => characterReady?.());
   handle('tts:fetch', 'char', z.union([str(4000), z.object({ text: str(4000), mood: z.enum(MOODS) })]), async (request) => {

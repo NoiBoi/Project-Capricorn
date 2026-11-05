@@ -1,10 +1,10 @@
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { safePage, cleanEvidence, chromeSiteAllowed } from '../../shared/lifeContext';
 import { LifeContext } from './context';
 import { PageSection } from './perception';
-const Page = z.object({ recordId:z.string().min(1).max(100), revision:z.number().int().nonnegative(), occurredAt:z.number().finite(), url:z.string().max(2000), title:z.string().max(300), headings:z.array(z.string().max(200)).max(8), description:z.string().max(500).default(''), selection:z.string().max(1500).default(''), excerpt:z.string().max(1500).default(''), mode:z.enum(['metadata','selection','excerpt','semantic','deep']).default('metadata'), sections:z.array(PageSection).max(80).default([]), playback:z.object({state:z.enum(['playing','paused','ended']),position:z.number().min(0).max(864000),duration:z.number().min(0).max(864000).nullable()}).strict().optional(), incognito:z.literal(false), focused:z.literal(true), visible:z.literal(true), operation:z.enum(['upsert','delete']).default('upsert') }).strict();
+const Page = z.object({ readRequestId:z.string().uuid().optional(), recordId:z.string().min(1).max(100), revision:z.number().int().nonnegative(), occurredAt:z.number().finite(), url:z.string().max(2000), title:z.string().max(300), headings:z.array(z.string().max(200)).max(8), description:z.string().max(500).default(''), selection:z.string().max(1500).default(''), excerpt:z.string().max(1500).default(''), mode:z.enum(['metadata','selection','excerpt','semantic','deep']).default('metadata'), sections:z.array(PageSection).max(80).default([]), playback:z.object({state:z.enum(['playing','paused','ended']),position:z.number().min(0).max(864000),duration:z.number().min(0).max(864000).nullable()}).strict().optional(), incognito:z.literal(false), focused:z.literal(true), visible:z.literal(true), operation:z.enum(['upsert','delete']).default('upsert') }).strict();
 export const ChromePage = Page;
 /** Authenticated loopback, fixed Host and exact extension Origin. No browser CORS wildcard. */
 export class ChromeBridge {
@@ -16,6 +16,35 @@ export class ChromeBridge {
     const safe = url === undefined ? undefined : safePage(url);
     const authorized = !!source?.permissions.collect && !source.paused && !!source.permissions.content && !!source.permissions.live && (url === undefined || !!safe && chromeSiteAllowed(source.sites, safe));
     return { status: !authorized ? 'source-disallowed' : paired && this.life.bridge.state === 'listening' ? 'paired-authorized' : 'unavailable-or-unpaired', paired, authorized, transport: this.life.bridge.state, lastIntake: this.lastIntake, lastAcceptedAt: this.lastAcceptedAt, deliveringRecently: this.lastIntake === 'extension' && !!this.lastAcceptedAt && Date.now() - this.lastAcceptedAt < 90000 };
+  }
+  private reading?: { id: string; startedAt: number; delivered: boolean; finish(status: string): void };
+  private reader?: http.ServerResponse;
+  requestPage(signal: AbortSignal): Promise<{ status: string }> {
+    signal.throwIfAborted();
+    if (this.preflight().status !== 'paired-authorized') return Promise.resolve({ status: 'unavailable-or-disallowed' });
+    if (this.reading) return Promise.resolve({ status: 'busy' });
+    return new Promise(resolve => {
+      const abort = () => finish('cancelled');
+      const timeout = setTimeout(() => finish('extension-timeout'), 8000);
+      const finish = (status: string) => {
+        clearTimeout(timeout);
+        signal.removeEventListener('abort', abort);
+        this.reading = undefined;
+        resolve({ status });
+      };
+      this.reading = { id: randomUUID(), startedAt: Date.now(), delivered: false, finish };
+      signal.addEventListener('abort', abort, { once: true });
+      if (signal.aborted) abort();
+      else this.deliverRead();
+    });
+  }
+  isRequestedRead(id?: string) { return id !== undefined && id === this.reading?.id; }
+  private deliverRead() {
+    if (!this.reader || !this.reading || this.reading.delivered) return;
+    this.reading.delivered = true;
+    this.reader.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    this.reader.end(JSON.stringify({ id: this.reading.id, mode: 'semantic', expiresAt: this.reading.startedAt + 8000 }));
+    this.reader = undefined;
   }
   private server?: http.Server; private last = 0; private serial = 0;
   private rawSink?: (page: z.infer<typeof Page>, intake: 'extension' | 'controlled-test') => boolean | Promise<boolean>;
@@ -31,17 +60,30 @@ export class ChromeBridge {
     const server = this.server = http.createServer((req,res) => {
       const origin = `chrome-extension://${credentials.extensionId}`;
       const reject = (code:number) => { res.writeHead(code); res.end(); };
-      if (req.headers.host !== `127.0.0.1:${this.port}` || req.headers.origin !== origin || !['/v1/page','/v1/status'].includes(req.url ?? '')) return reject(403);
+      if (req.headers.host !== `127.0.0.1:${this.port}` || req.headers.origin !== origin || !['/v1/page','/v1/status','/v1/read-request'].includes(req.url ?? '')) return reject(403);
       res.setHeader('Access-Control-Allow-Origin',origin); res.setHeader('Vary','Origin');
       if (req.method === 'OPTIONS') { res.setHeader('Access-Control-Allow-Methods','POST, GET'); res.setHeader('Access-Control-Allow-Headers','authorization,content-type'); return reject(204); }
       const provided = Buffer.from(req.headers.authorization ?? ''), expected = Buffer.from('Bearer '+credentials.token);
       if (provided.length !== expected.length || !timingSafeEqual(provided,expected)) return reject(401);
+      if (req.method === 'POST' && req.url === '/v1/read-request' && req.headers['content-type']?.startsWith('application/json')) {
+        if (this.reader) { this.reader.writeHead(204); this.reader.end(); }
+        this.reader = res;
+        const timer = setTimeout(() => { if (!res.writableEnded) { res.writeHead(204); res.end(); } }, 20000);
+        res.on('close', () => { clearTimeout(timer); if (this.reader === res) this.reader = undefined; });
+        this.deliverRead();
+        return;
+      }
       if (req.method === 'POST' && req.url === '/v1/status') { res.writeHead(200,{'Content-Type':'application/json','Cache-Control':'no-store'}); res.end(JSON.stringify({ paired: true })); return; }
       if (req.method !== 'POST' || req.url !== '/v1/page' || !req.headers['content-type']?.startsWith('application/json')) return reject(401);
       if (Date.now()-this.last < 200) return reject(429); this.last = Date.now();
       let size = 0, body = ''; req.setTimeout(3000,()=>req.destroy());
       req.on('data', chunk => { size += chunk.length; if (size>256000) { req.destroy(); return; } body += chunk.toString(); });
-      req.on('end',async()=>{ try { const data=Page.parse(JSON.parse(body)); const accepted=await this.accept(data, 'extension'); res.writeHead(accepted?202:204); res.end(); } catch { reject(400); } });
+      req.on('end',async()=>{ try { const data=Page.parse(JSON.parse(body)); const accepted=await this.accept(data, 'extension');
+        if (this.reading) {
+          if (accepted && data.operation === 'upsert' && data.mode === 'semantic' && data.occurredAt >= this.reading.startedAt) this.reading.finish('accepted');
+          else if (data.readRequestId === this.reading.id) this.reading.finish('disallowed-or-paused');
+        }
+        res.writeHead(accepted?202:204); res.end(); } catch { reject(400); } });
     });
     server.maxConnections = 4; server.headersTimeout = 4000; server.requestTimeout = 4000;
     await new Promise<void>(resolve => { server.once('error',()=>{if(serial===this.serial)this.life.bridge.state='unavailable: loopback port in use';resolve();}); server.listen(this.port,'127.0.0.1',()=>{if(serial===this.serial)this.life.bridge.state='listening';resolve();}); });
@@ -76,5 +118,5 @@ export class ChromeBridge {
     else if(accepted){const prior=this.life.latest().find(e=>e.source==='chrome'&&e.recordId==='playback');if(prior&&page.revision>prior.revision)this.life.ingest({...prior,revision:page.revision,occurredAt:now,receivedAt:now,operation:'delete'});}
     return accepted;
   }
-  stop() { this.serial++; this.server?.closeAllConnections(); this.server?.close(); this.server=undefined; }
+  stop() { this.reading?.finish('stopped'); this.reader?.end(); this.reader = undefined; this.serial++; this.server?.closeAllConnections(); this.server?.close(); this.server=undefined; }
 }

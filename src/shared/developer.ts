@@ -9,7 +9,7 @@ export const DEV_ACTIVITIES = ['notice', 'lean', 'stretch', 'settle', 'return', 
 export const DEV_INTERACTIONS = ['pat', 'poke', 'hover', 'return', 'window'] as const;
 export const DEV_DIALOGUE = ['greeting', 'notice', 'resume', 'roam', 'perch', 'arrival', 'pickup', 'putdown', 'pat', 'poke', 'return', 'thanks', 'farewell'] as const;
 export const DEV_SCENARIOS = ['shader_compare', 'sit_hover', 'sit_inspect', 'recline_rest', 'cursor_visit', 'drop_fallback', 'perch_quick', 'perch_held', 'pat_upright', 'pat_perched', 'pat_inverted', 'continuity'] as const;
-export interface PoseRendererState { pose: SecondaryPose | null; shader: boolean; reduced: boolean; motion: number; mood?: Mood; clip?: string; phase?: AssistantPhase; attachment?: string | null }
+export interface PoseRendererState { pose: SecondaryPose | null; shader: boolean; reduced: boolean; motion: number; mood?: Mood; clip?: string; phase?: AssistantPhase; attachment?: string | null; posture?: string; primaryPose?: string }
 export interface DevPreview { animation?: SpriteClip; secondary?: SecondaryPose; secondaryMotion?: 'animated' | 'still'; secondaryScene?: 'hover' | 'inspect' | 'rest'; held?: boolean; attachment?: 'perch' | 'inverted' | null; deepSleep?: boolean; phase?: AssistantPhase; mood?: Mood }
 export type DevCommand =
   | { kind: 'reaction'; name: typeof DEV_REACTIONS[number]; seconds: number }

@@ -11,7 +11,7 @@ it('runs the integrated agent through Electron with fixture pixels, native movem
   const env = { ...process.env, CAPRI_RUNTIME: '2', CAPRI_V2_PROFILE_ID: 'integrated-' + randomUUID(), CAPRI_TEST: '1', CAPRI_OFFSCREEN: '1', CAPRI_NO_DEV_KEY: '1', CAPRI_V2_MODEL: 'synthetic', CAPRI_V2_AMBIENT_MS: '60000', CAPRI_V2_WINDOW_FOCUS: '0' };
   const dir = selectRuntime(env, os.homedir()).profile!;
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ firstRunComplete: true, ai: { provider: 'offline' }, memory: { enabled: true, autoLearn: false }, privacy: { saveHistory: true }, dialogue: { localContext: true }, actions: { policies: { read_screen: 'allow', teleport: 'allow' } }, voice: { ttsEnabled: false }, character: { startupIntro: false }, teleport: { auto: false, effects: false } }));
+  fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ firstRunComplete: true, ai: { provider: 'offline' }, memory: { enabled: true, autoLearn: false }, privacy: { saveHistory: true }, dialogue: { localContext: true }, actions: { policies: { read_screen: 'allow', teleport: 'allow' } }, voice: { ttsEnabled: false }, behavior: { quietHours: { enabled:false } }, character: { startupIntro: false }, teleport: { auto: false, effects: false } }));
   let app: ElectronApplication | undefined;
   try {
     app = await electron.launch({ args: [path.resolve(__dirname, '../..')], env });
@@ -59,7 +59,26 @@ it('runs the integrated agent through Electron with fixture pixels, native movem
     await app.evaluate(async()=>{const g=globalThis as any;g.__capriWindowsOverride=[];await g.__capri.runtime2.send('The fixture closed; try only that same target.');});
     await expect.poll(() => app!.evaluate(() => ({busy:(globalThis as any).__capri.runtime2.chatState.busy,calls:(globalThis as any).__inputs.length})),{timeout:10000}).toEqual({busy:false,calls:7});
     const closed=await app.evaluate(async()=>{const a=(globalThis as any).__capri;return(await a.runtime2.archive.conversation()).records.find((r:any)=>r.kind==='tool-result'&&r.requestId==='closed');});
-    expect(closed).toMatchObject({receipt:{outcome:'failed'},result:{ok:false}});
+    expect(closed).toMatchObject({receipt:{outcome:expect.stringMatching(/^(failed|denied)$/)}});
+    if(closed.result && 'ok' in closed.result)expect(closed.result.ok).toBe(false);
+    await expect.poll(() => app!.evaluate(() => (globalThis as any).__capri.runtime2.cognitive.host.allowed('move')), {timeout:10000}).toBe(true);
+    await app.evaluate(async () => {
+      const g = globalThis as any, loop = g.__capri.runtime2.cognitive;
+      let admitted = false;
+      loop.ambientTrigger = () => { if (!admitted) { admitted = true; return 'source-change'; } };
+      loop.provider.infer = async (_m: unknown, input: any) => {
+        g.__inputs.push(input);
+        return {text:'A little room over here.',calls:[{id:'ambient-reaction',name:'react',arguments:JSON.stringify({emotion:'curious'})},{id:'ambient-body',name:'move',arguments:JSON.stringify({target:'corner'})}]};
+      };
+      loop.kick();
+    });
+    await expect.poll(() => app!.evaluate(() => ({busy:(globalThis as any).__capri.runtime2.chatState.busy,calls:(globalThis as any).__inputs.length})),{timeout:10000}).toEqual({busy:false,calls:8});
+    const ambient = await app.evaluate(async () => {
+      const g = globalThis as any;
+      return { route:g.__inputs[7].workingState.route, records:(await g.__capri.runtime2.archive.conversation()).records.filter((r:any)=>r.kind==='tool-result'&&r.requestId.startsWith('ambient-')) };
+    });
+    expect(ambient.route).toBe('ambient');
+    expect(ambient.records).toMatchObject([{requestId:'ambient-reaction',receipt:{outcome:'dispatched'}},{requestId:'ambient-body',receipt:{outcome:'completed'}}]);
     await closeIsolatedApp(app); app = undefined;
     app = await electron.launch({ args: [path.resolve(__dirname, '../..')], env });
     await expect.poll(() => app!.evaluate(() => !!(globalThis as any).__capri?.runtime2)).toBe(true);
