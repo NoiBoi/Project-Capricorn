@@ -12,6 +12,7 @@ import { interactionObservation } from './interactionContext';
 
 /** Isolated observation archive with optional provider-independent cognition. */
 export class Runtime2 {
+  speech(id: string, state: 'queued' | 'start' | 'end' | 'cancel' | 'error') { this.cognitive?.speech(id, state); }
   private state: 'new' | 'initializing' | 'active' | 'stopping' | 'stopped' = 'new';
   private conversation: LogicalConversation;
   private controller = new AbortController();

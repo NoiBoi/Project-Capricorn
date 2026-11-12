@@ -14,7 +14,9 @@ import { Perception, type DesktopHost } from './perception';
 import type { CanonicalState } from './canonicalState';
 import type { DailySession } from './dailySession';
 import { contentDelta, observationSlot, sceneFact } from './workingObservations';
-export type CognitionMode = 'layered' | 'lean' | 'two-speed';
+import { companionTools, COMPANION_READS, COMPANION_READ_LIMIT, COMPANION_INSTRUCTIONS } from './companionPolicy';
+import { recallDialogue } from './dialogueRecall';
+export type CognitionMode = 'companion' | 'layered' | 'lean' | 'two-speed';
 export interface LoopOptions { cognition?: CognitionMode; model?: string; contextBudget?: number; ambientMs?: number; timeoutMs?: number; host?: DesktopHost; daily?: DailySession; emit?: (channel: string, payload: unknown) => void }
 export class CognitiveLoop {
   private controller = new AbortController();
@@ -43,10 +45,28 @@ export class CognitiveLoop {
   private conversationId = '';
   private inferenceReceipts: { at: number; model: string; requestId?: string; usage?: { inputTokens: number; outputTokens: number } }[] = [];
   private lastWakeDecision = '';
+  private playback = new Map<string, number>();
+  private playbackEndedAt = -Infinity;
+  /** Queue time counts as busy too. Stale end events cannot clear newer speech. */
+  speech(id: string, state: 'queued' | 'start' | 'end' | 'cancel' | 'error') {
+    if (state === 'queued') {
+      if (this.playback.size >= 50) this.playback.delete(this.playback.keys().next().value!);
+      this.playback.set(id, Date.now() + 120_000);
+    } else if (this.playback.has(id)) {
+      if (state === 'start') this.playback.set(id, Date.now() + 10 * 60_000);
+      else { this.playback.delete(id); this.playbackEndedAt = Date.now(); }
+    }
+  }
+  private playbackBusy() {
+    for (const [id, expiresAt] of this.playback) if (expiresAt <= Date.now()) {
+      this.playback.delete(id); this.playbackEndedAt = Date.now();
+    }
+    return this.playback.size > 0 || Date.now() - this.playbackEndedAt < 3000;
+  }
   private normalBaselineAt?: number;
   private baselineState(s: CanonicalState) { return this.normalBaselineAt !== undefined && s.revisedAt <= this.normalBaselineAt && ['checkpoint','investigation','intention'].includes(s.kind); }
   constructor(private archive: WindowFocusArchive, private provider: CognitiveProvider, private executor: TypedCapabilityExecutor, private options: LoopOptions = {}) {
-    if (options.cognition && !['layered', 'lean', 'two-speed'].includes(options.cognition)) throw Error('Invalid cognitive comparison mode.');
+    if (options.cognition && !['companion', 'layered', 'lean', 'two-speed'].includes(options.cognition)) throw Error('Invalid cognitive comparison mode.');
     this.attention = new AttentionController(this.interval, Math.min(this.interval, 10000), Date.now, options.daily?.config.requestsPerHour ?? 120, options.cognition === 'layered');
     if (options.host) this.perception = new Perception(archive, options.host, (structural, source, identity, conditions, at, ordinaryCandidate) => this.notifyObservation(structural, source, identity, conditions, at, ordinaryCandidate), options.daily?.recorder);
     for (const value of [options.contextBudget, options.ambientMs, options.timeoutMs]) if (value !== undefined && (!Number.isSafeInteger(value) || value < 1)) throw Error('Invalid cognitive loop resource limit.');
@@ -65,7 +85,7 @@ export class CognitiveLoop {
     await this.refreshState();
     const savedAttention = await this.archive.readAttention();
     if (savedAttention) this.attention.restore(savedAttention);
-    this.options.daily?.recorder.event('state.restored', { conversationId: this.conversationId, canonical: this.stateRevisions(), attention: this.attention.snapshot(), cognition: this.options.cognition ?? 'two-speed' });
+    this.options.daily?.recorder.event('state.restored', { conversationId: this.conversationId, canonical: this.stateRevisions(), attention: this.attention.snapshot(), cognition: this.options.cognition ?? 'companion' });
     const scene = await this.archive.readScene();
     if (scene.coverage.recorded) {
       this.notifyObservation();
@@ -137,6 +157,7 @@ export class CognitiveLoop {
   }
   private due() { if (this.options.host && !this.options.host.allowed('state')) return []; const now = Date.now(); return this.canonical.filter(s => !this.baselineState(s) && !this.unavailableReviews.has(s.id) && s.dueAt !== null && s.dueAt <= now && (s.reviewedAt ?? -Infinity) < s.dueAt); }
   private ambientTrigger() {
+    if (this.playbackBusy()) return;
     if (this.awaitingRecoveryObservation) return;
     if (this.options.host && !this.options.host.allowed("disclose", undefined, "ambient")) return;
     if (this.options.daily && !this.options.daily.ambientReady()) return;
@@ -166,7 +187,7 @@ export class CognitiveLoop {
   async diagnosticBaseline(clean = false) {
     const page = await this.archive.conversation(1, true);
     await this.refreshState();
-    const restored = { conversationId: page.id, hasPriorDialogue: page.records.length > 0, attention: this.attention.snapshot(), canonical: this.stateRevisions(), cognition: this.options.cognition ?? 'two-speed' };
+    const restored = { conversationId: page.id, hasPriorDialogue: page.records.length > 0, attention: this.attention.snapshot(), canonical: this.stateRevisions(), cognition: this.options.cognition ?? 'companion' };
     if (clean) {
       // Explicit diagnostic option, only call while quiescent. No durable state is removed.
       this.attention.restore({ paused: false });
@@ -253,8 +274,9 @@ export class CognitiveLoop {
       const images: { observationId: string; dataUrl: string }[] = [];
       let initiatingEvidence: string[] = [], initiatingImages: string[] = [];
       const failedCaptures = new Set<string>();
-      const cognition = this.options.cognition ?? 'two-speed';
-      let deep = !ambient || (cognition === 'two-speed' && due.some(s => s.kind === 'investigation'));
+      const cognition = this.options.cognition ?? 'companion';
+      let deep = !ambient || (['two-speed', 'companion'].includes(cognition) && due.some(s => s.kind === 'investigation'));
+      let ordinaryReadUsed = false;
       let partial = ''; let responseId = randomUUID();
       try {
         await this.reconcile(); signal.throwIfAborted();
@@ -266,7 +288,7 @@ export class CognitiveLoop {
         for (let round = 0; round < 6; round++) {
           this.consumeObservations();
           const lean = ambient && cognition !== 'layered' && !deep;
-          const cognitiveMode = !ambient ? 'direct' : round > 0 ? 'investigation' : due.length || trigger === 'attention-review' ? 'scheduled' : 'routine';
+          const cognitiveMode = !ambient ? 'direct' : round > 0 ? lean && cognition === 'companion' ? 'evidence-continuation' : 'investigation' : due.length || trigger === 'attention-review' ? 'scheduled' : 'routine';
           const [page, dialogue, scene] = await Promise.all([
             this.archive.conversation(round > 0 ? 160 : 32, false, 'exclude'),
             this.archive.conversation(cognitiveMode === 'routine' ? 24 : 60, true),
@@ -417,10 +439,13 @@ export class CognitiveLoop {
           signal.throwIfAborted();
           const suppliedDue = due.filter(s => allowedState.some(a => a.id === s.id));
           for (const state of suppliedDue) suppliedReviews.add(state.id);
-          const tools = round === 5 ? [] : lean ? [...AMBIENT_TOOLS, ...(cognition === 'two-speed' ? [ESCALATE_TOOL] : [])] : cognitiveMode === 'routine' ? ROUTINE_TOOLS : AGENT_TOOLS;
+          const companion = lean && cognition === 'companion';
+          const tools = round === 5 ? [] : companion ? companionTools(!ordinaryReadUsed) : lean ? [...AMBIENT_TOOLS, ...(cognition === 'two-speed' ? [ESCALATE_TOOL] : [])] : cognitiveMode === 'routine' ? ROUTINE_TOOLS : AGENT_TOOLS;
+          const recalledDialogue = !ambient ? await recallDialogue(this.archive, page.records, signal, () => !this.host || this.host.allowed('conversation')) : [];
           const input = assembleContext(presented, model, tools, this.options.contextBudget, 8192 + images.length * 8192, {
-            toolBudget: { remainingExecutableRounds: Math.max(0, 5 - round), remainingRequests: 6 - round, mode,
-              instruction: lean ? 'Ordinary speech and actions finish in this request. No finishing inference follows. Escalate explicitly only when deeper work is warranted.' : round === 5 ? 'No tool executions remain. Answer the direct user question from actual outcomes when possible; disclose unresolved work. Ambient silence remains valid. Never claim a denied action succeeded.' : 'Use remaining tool rounds to retrieve evidence and complete justified state updates before the finishing response. Stop when the investigation stopping condition is met; complete or abandon its canonical record. Keep progress in the checkpoint or investigation for a later boundary.' },
+            toolBudget: { remainingExecutableRounds: companion ? ordinaryReadUsed ? 1 : 2 : Math.max(0, 5 - round), remainingRequests: companion ? ordinaryReadUsed ? 1 : 2 : 6 - round, mode,
+              ...(companion ? { evidenceReads: ordinaryReadUsed ? 0 : COMPANION_READ_LIMIT, explicitInvestigationRequestCeiling: 6 - round } : {}),
+              instruction: companion ? ordinaryReadUsed ? 'Ordinary evidence reads are spent. Use their actual results to respond or remain silent. Actions finish without another request; investigate can explicitly open longer work.' : 'Up to two evidence reads earn one outcome-aware continuation. No investigation record is required. Actions alone finish without another request.' : lean ? 'Ordinary speech and actions finish in this request. No finishing inference follows. Escalate explicitly only when deeper work is warranted.' : round === 5 ? 'No tool executions remain. Answer the direct user question from actual outcomes when possible; disclose unresolved work. Ambient silence remains valid. Never claim a denied action succeeded.' : 'Use remaining tool rounds to retrieve evidence and complete justified state updates before the finishing response. Stop when the investigation stopping condition is met; complete or abandon its canonical record. Keep progress in the checkpoint or investigation for a later boundary.' },
             cognitiveMode, cognition, route: lean ? 'ambient' : 'deep', wakeCause: trigger,
             ...(matchedCondition && round === 0 ? { matchedCondition } : {}),
             scene: { version: scene.version, facts },
@@ -433,9 +458,10 @@ export class CognitiveLoop {
             now: Date.now(), body: this.options.host?.body() ?? null, attention: this.attention.snapshot(), activeState: lean ? ambientState(allowedState.filter(s => s.kind !== 'checkpoint' || s.revisedAt > completedAfter && !s.evidence.some(id=>retiredDialogue.has(id))), new Set([...facts.map(o => o.id), ...immediate.map(o => o.id)]), suppliedDue) : this.workingState(allowedState.filter(s=>!ambient || s.kind!=='checkpoint' || s.revisedAt>completedAfter && !s.evidence.some(id=>retiredDialogue.has(id))), cognitiveMode === 'routine' ? 6000 : 18000, suppliedDue), dueReviews: suppliedDue.map(s => s.id),
             completedTasks: endedTasks.slice(0,6),
             conversationPolicy: 'Selected historical exchanges and assistant-originated asides supply context and expressed views, not reissued instructions or a reason to repeat a remark. An unrelated subject needs no callback. Completed or abandoned task instructions are inactive. Current user instructions win. Relevant history has no time expiry; expand older dialogue through archive search and retrieve_evidence.',
+            ...(recalledDialogue.length ? { recalledDialogue, recallPolicy: 'Original historical dialogue, attributed by speaker and time. Earlier assistant claims do not prove user facts. Later corrections, current canonical state and current user instructions win. These are selected historical mentions, not an exhaustive account of later developments.' } : {}),
             ...(initiatingImages.length ? { initiatingVisualEvidence: initiatingImages.filter(id=>resolved.get(id) && permitted(resolved.get(id)!)).map(id=>({id,representation:images.some(i=>i.observationId===id)?'image':'reference',recovery:'retrieve_evidence',policy:'Historical pixels; automatic reuse is limited to one image in the first continuation.'})) } : {}),
             evidenceRecovery: 'Search or fetch known IDs. Promote useful discoveries to working-checkpoint or canonical memory when warranted.',
-          }, lean ? IDENTITY + AMBIENT_INSTRUCTIONS : IDENTITY);
+          }, lean ? IDENTITY + AMBIENT_INSTRUCTIONS + (companion ? COMPANION_INSTRUCTIONS : '') : IDENTITY);
           // If an oversized tool exchange was evicted, recover its small initiating
           // excerpt instead of mistaking a candidate tool result for supplied content.
           const suppliedResultEvidence = new Set(input.records.flatMap(r=>r.kind==='tool-result' && r.receipt.outcome==='completed' && r.result===actualResults.get(r.requestId)?.result ? actualResults.get(r.requestId)?.evidence ?? [] : []));
@@ -559,13 +585,15 @@ export class CognitiveLoop {
               await this.save({ id: randomUUID(), at: Date.now(), kind: 'tool-call', requestId: call.id, name: call.name, arguments: call.arguments, inference });
             }
           }
+          let readAttempts = 0, escalated = false;
           for (const call of result.calls) {
             signal.throwIfAborted();
             const toolStarted = Date.now();
             recorder?.event('tool.start', { ...call, round, body: this.options.host?.body(), canonical: this.stateRevisions() }, { cycleId, requestId: networkId });
-            if (round === 5 || !tools.some(tool => tool.name === call.name)) {
+            const readOverBudget = companion && COMPANION_READS.has(call.name) && ++readAttempts > COMPANION_READ_LIMIT;
+            if (round === 5 || readOverBudget || !tools.some(tool => tool.name === call.name)) {
               actualResults.set(call.id, { result: undefined, round, evidence: [] });
-              recorder?.event('tool.denied', { ...call, reason: round === 5 ? 'tool-budget-exhaustion' : 'tool-not-offered', persisted: true }, { cycleId, requestId: networkId });
+              recorder?.event('tool.denied', { ...call, reason: round === 5 || readOverBudget ? 'tool-budget-exhaustion' : 'tool-not-offered', persisted: true }, { cycleId, requestId: networkId });
               await this.save({ id: randomUUID(), at: Date.now(), kind: 'tool-result', requestId: call.id, receipt: { id: call.id, at: Date.now(), capability: call.name, outcome: 'denied', detail: 'Tool is unavailable for this request.', dependencies: ['runtime2:archive'] } });
               continue;
             }
@@ -586,6 +614,7 @@ export class CognitiveLoop {
               }, signal);
             recorder?.event('tool.end', { ...call, execution, durationMs: Date.now() - toolStarted, body: this.options.host?.body(), canonical: this.stateRevisions(), attention: this.attention.snapshot() }, { cycleId, requestId: networkId });
             if (call.name === 'investigate' && execution.receipt.outcome === 'completed') {
+              escalated = true;
               const id = (execution.result as { id?: string })?.id;
               if (id && !investigationIds.includes(id)) investigationIds.push(id);
             }
@@ -611,12 +640,12 @@ export class CognitiveLoop {
           if (lean) {
             // A complete small decision needs execution receipts, not another cloud response.
             // Only an offered, successfully persisted model escalation may open the deep loop.
-            const escalation = result.calls.find(call => call.name === 'investigate');
-            const page = escalation ? await this.archive.conversation(32, false, 'exclude') : undefined;
-            deep = !!escalation && !!page?.records.some(r => r.kind === 'tool-result' && r.requestId === escalation.id && r.receipt.outcome === 'completed');
-            recorder?.event('ambient.completed', { escalated: deep, actions: result.calls.map(call => call.name), text: result.text, finishingInference: false }, { cycleId, requestId: networkId });
+            deep = escalated;
+            const continueRead: boolean = companion && !ordinaryReadUsed && readAttempts > 0;
+            ordinaryReadUsed ||= continueRead;
+            recorder?.event('ambient.completed', { escalated: deep, evidenceContinuation: continueRead, actions: result.calls.map(call => call.name), text: result.text, finishingInference: false }, { cycleId, requestId: networkId });
             if (result.text) this.emit('runtime2:speak', { id: responseId, text: result.text, ambient: true });
-            if (!deep) break;
+            if (!deep && !continueRead) break;
           }
           if (round === 5) throw Error('Tool round limit reached.');
           if (ambient && this.pendingUser) break;

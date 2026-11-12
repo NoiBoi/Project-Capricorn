@@ -329,9 +329,14 @@ describe('TeleportController', () => {
     expect(await rig({ idle: 900 }).tc.autoTick()).toBe('user is away');
     const off = rig(); off.s.teleport.auto = false;
     expect(await off.tc.autoTick()).toBe('automatic teleport is off');
-    const ok = rig();
-    expect(await ok.tc.autoTick()).toBeNull();
-    expect(ok.tc.count).toBe(1);
+    // This checks admission, not the random destination distribution. An edge
+    // peek can legitimately have no safe traversal from this large fixture.
+    const random = vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    try {
+      const ok = rig();
+      expect(await ok.tc.autoTick()).toBeNull();
+      expect(ok.tc.count).toBe(1);
+    } finally { random.mockRestore(); }
 
   });
   it('manual teleport works without AI', async () => {

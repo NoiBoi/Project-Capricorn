@@ -54,7 +54,7 @@ async function fixture(infer: CognitiveProvider['infer'], options: LoopOptions =
     react: vi.fn(async () => ({ ok: true, detail: 'Dispatched fixture clip' })), body: () => ({ moving: false }) };
   const inputs: ModelInput[] = [], emitted: { channel: string; payload: any }[] = [];
   const loop = new CognitiveLoop(archive, { models: async () => [model], shutdown() {}, infer: async (...args) => { inputs.push(args[1]); return infer(...args); } }, new TypedCapabilityExecutor(),
-    { model: model.id, ambientMs: 20, host, emit: (channel,payload) => emitted.push({ channel,payload }), ...options });
+    { model: model.id, cognition: 'two-speed', ambientMs: 20, host, emit: (channel,payload) => emitted.push({ channel,payload }), ...options });
   cleanups.push(() => loop.shutdown()); await loop.initialize();
   clearInterval((loop as any).timer);
   async function wake(o?: Observation) {

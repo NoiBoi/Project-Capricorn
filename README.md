@@ -6,7 +6,7 @@ This is an independent repository with a fresh Git history. It continues develop
 
 ## Current version
 
-1.5.3 improves phone-evidence retrieval, source-backed conversation continuity, and relevance of ambient context and shared experiences. Source threads stay ephemeral, permission changes withdraw dependent recall, and unchanged observations can remain silent. See [verification and limitations](docs/RELIABILITY_1_5_3.md).
+1.6.0 adds an opt-in Runtime 2 companion entry point, bounded evidence reads without an investigation prerequisite, automatic historical dialogue recall, and playback-aware ambient pacing. The ordinary companion path is now the Runtime 2 default. See the [source review, implementation and verification](docs/OPEN_SOURCE_COMPANION_REVIEW.md). Natural companion quality still needs ordinary-use observation.
 
 - Ctrl+Shift+Space opens focused quick chat.
 - Ctrl+C+Space opens long-term chat on the active monitor. Escape dismisses it.
@@ -25,6 +25,8 @@ npm start
 ```
 
 `npm run dist` builds the Windows installer. Native-window and keyboard checks require an interactive Windows session. Close other Capri instances before native shortcut tests so they do not own the global hotkeys.
+
+For the new companion architecture, run `npm run start:daily`, or launch the installed executable with `--runtime2`. This opens the existing Chat panel with session controls, initially paused. It reuses the isolated Runtime 2 `daily-test` profile, leaving the normal profile separate. Model selection, sign-in and desktop-context controls are in the panel. The normal application launch continues to select the legacy runtime. Developers can select the earlier comparison paths with `CAPRI_V2_COGNITION=two-speed`, `lean`, or `layered`.
 
 ## Privacy and attribution
 

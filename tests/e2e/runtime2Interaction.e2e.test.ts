@@ -88,8 +88,10 @@ it('dispatches supported speech phases, clears cancellation, and leaves an ambie
   expect(await f.app.evaluate(()=>({visible:(globalThis as any).__capri.bubble.hasVisibleText,cues:(globalThis as any).__cues.filter((c:any)=>c.type==='phase'&&c.phase==='thinking').length}))).toEqual({visible:false,cues:0});
   await f.panel.evaluate(()=>window.capri.invoke('settings:set',{voice:{ttsEnabled:true}}));
   await f.app.evaluate(()=>{const a=(globalThis as any).__capri;a.runtime2.cognitive.options.emit('runtime2:speak',{id:'fixture-speech',text:'Synthetic speech',ambient:false});});
+  expect(await f.app.evaluate(()=>(globalThis as any).__capri.runtime2.cognitive.playbackBusy())).toBe(true);
   await f.char.evaluate(()=>window.capri.invoke('char:speechState',{utteranceId:'runtime2:fixture-speech',state:'start'}));await expect.poll(()=>f.char.evaluate(()=>(window as any).__capriDebug.phase)).toBe('speaking');
   await f.char.evaluate(()=>window.capri.invoke('char:speechState',{utteranceId:'runtime2:fixture-speech',state:'end'}));await expect.poll(()=>f.char.evaluate(()=>(window as any).__capriDebug.phase)).toBe('idle');
+  expect(await f.app.evaluate(()=>(globalThis as any).__capri.runtime2.cognitive.playback.size)).toBe(0);
   const id=await f.voiceStart();await f.char.evaluate(()=>window.capri.invoke('char:speechState',{utteranceId:'runtime2:fixture-speech',state:'cancel'}));await expect.poll(()=>f.char.evaluate(()=>(window as any).__capriDebug.phase)).toBe('listening');
   await f.char.evaluate(()=>window.capri.invoke('voice:ptt','cancel'));await f.audio(id);await expect.poll(()=>f.char.evaluate(()=>(window as any).__capriDebug.phase)).toBe('idle');
   expect(await f.app.evaluate(()=>(globalThis as any).__inputs.length)).toBe(0);

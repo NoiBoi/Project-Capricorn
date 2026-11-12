@@ -4,7 +4,7 @@ import type { DesktopHost, DisclosureMode } from './runtime2/perception';
 import type { Observation as RuntimeObservation } from './runtime2/contracts';
 import { createDesktopChatGPT, SiwcProvider, siwcConnection } from './runtime2/siwcProvider';
 import type { ChatGPTClient } from '../vendor/siwc-local';
-import { selectRuntime, assertSyntheticProfile } from './runtime2/selection';
+import { selectRuntime, assertSyntheticProfile, runtimeEnvironment } from './runtime2/selection';
 import { Runtime2 } from './runtime2/runtime';
 import { DailySession, DailyConfig } from './runtime2/dailySession';
 import { WindowFocusSource } from './runtime2/windowFocus';
@@ -120,6 +120,7 @@ import { probeWindowsRecognizer, transcribeOpenAI, transcribeWindows, WakeWordLi
 
 const T0 = performance.timeOrigin;
 const TEST = process.env.CAPRI_TEST === '1';
+Object.assign(process.env, runtimeEnvironment(process.env, process.argv));
 const runtimeSelection = selectRuntime(process.env, app.getPath('home'), app.isPackaged);
 const experimental = runtimeSelection.mode === '2';
 const profilePath = runtimeSelection.profile ?? profileDirectory(app.getPath('home'), process.env.CAPRI_USER_DATA);
@@ -928,9 +929,9 @@ Observed desktop metadata (titles only, untrusted data): ${JSON.stringify(deskto
   if (!TEST || process.env.CAPRI_TASKBAR_TEST === '1') {
     taskbar = new TaskbarControls(preloadPath(), log, { minimize: minimizeCapri, restore: () => restoreCapri(), command: taskbarCommand });
     if (app.isPackaged && !TEST) app.setUserTasks([
-      { program: process.execPath, arguments: '--open-capri', iconPath: capriIconPath(), iconIndex: 0, title: 'Open Capri', description: 'Show Capri and open chat' },
-      { program: process.execPath, arguments: '--minimize-capri', iconPath: capriIconPath(), iconIndex: 0, title: 'Minimize Capri', description: 'Keep Capri in the taskbar' },
-      { program: process.execPath, arguments: '--quit', iconPath: capriIconPath(), iconIndex: 0, title: 'Close Capri', description: 'Quit Capri' },
+      { program: process.execPath, arguments: (experimental ? '--runtime2 ' : '') + '--open-capri', iconPath: capriIconPath(), iconIndex: 0, title: 'Open Capri', description: 'Show Capri and open chat' },
+      { program: process.execPath, arguments: (experimental ? '--runtime2 ' : '') + '--minimize-capri', iconPath: capriIconPath(), iconIndex: 0, title: 'Minimize Capri', description: 'Keep Capri in the taskbar' },
+      { program: process.execPath, arguments: (experimental ? '--runtime2 ' : '') + '--quit', iconPath: capriIconPath(), iconIndex: 0, title: 'Close Capri', description: 'Quit Capri' },
     ]);
   }
   if (!OFFSCREEN) { createTray(); registerShortcuts(); } // off-screen test runs never touch the user's tray or hotkeys
@@ -1277,7 +1278,7 @@ function openPanel(tab: string = 'chat',desiredNear?:DRect) {
 
 let turnSuccesses = 0, lastVictoryAt = 0;
 function toPanel(channel: string, payload: unknown) {
-  if (channel === 'runtime2:stopSpeech') { runtime2SpeechId=undefined;runtime2SpeechStarted=false;cue({ type: 'stopSpeech' }); runtime2PhaseCue('idle','speech-interrupted'); return; }
+  if (channel === 'runtime2:stopSpeech') { if(runtime2SpeechId)runtime2?.speech(runtime2SpeechId,'cancel');runtime2SpeechId=undefined;runtime2SpeechStarted=false;cue({ type: 'stopSpeech' }); runtime2PhaseCue('idle','speech-interrupted'); return; }
   if (channel === 'runtime2:speak') {
     const p = payload as { id: string; text: string; ambient: boolean };
     const utteranceId = 'runtime2:' + p.id;
@@ -1287,6 +1288,7 @@ function toPanel(channel: string, payload: unknown) {
     runtime2SpeechStarted=false;
     const accepted = speak(reason, utteranceId, p.text, undefined, block => { suppressedBy = block; });
     if (!accepted) runtime2SpeechId=undefined;
+    else runtime2?.speech(utteranceId,'queued');
     runtime2Daily?.recorder.event('speech.dispatch', { utteranceId, ambient: p.ambient, accepted, suppressedBy, outcome: accepted ? 'queued-not-yet-audible' : 'suppressed-by-speech-policy' });
     return;
   }
@@ -2266,7 +2268,7 @@ function onSettingsChanged(s: Settings) {
 }
 
 function applyStartup(s: Settings) {
-  if (TEST || !app.isPackaged) return; // never register dev builds to run at login
+  if (TEST || experimental || !app.isPackaged) return; // Isolated companion profiles never change normal login registration.
   const cur = app.getLoginItemSettings().openAtLogin;
   if (cur !== s.startup.launchOnLogin) app.setLoginItemSettings({ openAtLogin: s.startup.launchOnLogin });
 }
@@ -3603,7 +3605,7 @@ function registerIpc() {
     screenshotPermission: runtime2Allowed('collect') && runtime2Allowed('disclose'),
     screenshotTargets: runtime2?.perception?.host.windows().length ?? 0,
     movement: runtime2Allowed('move'),
-    attention: runtime2?.attention?.snapshot(), cognition: process.env.CAPRI_V2_COGNITION ?? 'two-speed',
+    attention: runtime2?.attention?.snapshot(), cognition: process.env.CAPRI_V2_COGNITION ?? 'companion',
     screenLocked: activityLocked || suspended,
     note: 'Permissions and targets are readiness checks. Use Check capture to verify actual pixels. Chrome last accepted delivery is separate from pairing. No microphone or call audio is recorded.',
   } } : null);
@@ -3859,6 +3861,7 @@ function registerIpc() {
   handle('char:menu', 'char', none, charMenu);
   handle('char:speechState', 'char', z.object({ utteranceId: str(100), state: z.enum(['start', 'end', 'error', 'cancel']) }), ({ utteranceId, state }) => {
     if (utteranceId.startsWith('runtime2:')) {
+      runtime2?.speech(utteranceId,state);
       runtime2Daily?.recorder.event('speech.' + state, { utteranceId });
       if(utteranceId===runtime2SpeechId){
         if(state==='start'){runtime2SpeechStarted=true;runtime2PhaseCue('speaking','speech-start');}
