@@ -18,7 +18,9 @@ it('operates daily-test controls in the existing panel, inspects an offline repo
     app = await electron.launch({ args: [path.resolve(__dirname, '../..')], env });
     await expect.poll(() => app!.windows().some(w => /panel\.html/.test(w.url())), { timeout: 10000 }).toBe(true);
     const panel = app.windows().find(w => /panel\.html/.test(w.url()))!;
-    await expect.poll(() => panel.getByText('Runtime 2 daily test', { exact: true }).isVisible()).toBe(true);
+    await expect.poll(() => panel.getByRole('region', { name: 'Companion session' }).isVisible()).toBe(true);
+    await expect.poll(() => panel.getByRole('button', { name: 'Start Capri', exact: true }).isVisible()).toBe(true);
+    expect(await panel.getByRole('button', { name: 'Pause', exact: true }).isVisible()).toBe(false);
     const initial = await panel.evaluate(() => (window as any).capri.invoke('runtime2:daily-status'));
     expect(initial).toMatchObject({ paused: true, recording: { active: false }, usage: { requests: 0 }, readiness: { archive: { state: 'ready' }, chrome: { paired: false } } });
     await panel.getByRole('button', { name: 'Enable desktop context and movement', exact: true }).click();
@@ -40,10 +42,10 @@ it('operates daily-test controls in the existing panel, inspects an offline repo
       };
     });
     await panel.getByRole('button', { name: 'Load account models', exact: true }).click();
-    await expect.poll(() => panel.getByRole('combobox', { name: 'Daily-test model' }).inputValue()).toBe('fixture-chat');
+    await expect.poll(() => panel.getByRole('combobox', { name: 'Companion model' }).inputValue()).toBe('fixture-chat');
     await panel.getByRole('button', { name: 'Save settings', exact: true }).click();
     await expect.poll(() => panel.getByRole('status').allTextContents()).toContainEqual(expect.stringContaining('Saved.'));
-    await panel.getByRole('button', { name: 'Start diagnostic session', exact: true }).click();
+    await panel.getByRole('button', { name: 'Start Capri', exact: true }).click();
     await expect.poll(() => panel.evaluate(() => (window as any).capri.invoke('runtime2:daily-status'))).toMatchObject({ paused: false, recording: { active: true } });
     await panel.getByRole('textbox', { name: 'Message', exact: true }).fill('Remember to review the fixture equations.');
     await panel.getByRole('button', { name: 'Send', exact: true }).click();
@@ -57,6 +59,7 @@ it('operates daily-test controls in the existing panel, inspects an offline repo
     await panel.getByRole('button', { name: 'Resume', exact: true }).click();
     await panel.getByRole('button', { name: 'Stop session', exact: true }).click();
     const stopped = await panel.evaluate(() => (window as any).capri.invoke('runtime2:daily-status'));
+    await expect.poll(() => panel.getByRole('button', { name: 'Start Capri', exact: true }).isVisible()).toBe(true);
     await expect.poll(() => panel.evaluate(() => (window as any).capri.invoke('runtime2:daily-status'))).toMatchObject({ paused: true, recording: { active: false } });
     const folder = stopped.recording.folder;
     await expect.poll(() => fs.existsSync(path.join(folder, 'report.html'))).toBe(true);

@@ -6,7 +6,7 @@ import type { ActionRequest, ActionResult, AssistantPhase, ChatMessage, Connecti
 import { TOOL_NAMES, type Settings, type ToolName } from '../../shared/settings';
 import type { CapriApi } from '../../preload/preload';
 import { icon } from './icons';
-import { DEV_ANIMATIONS, DEV_ACTIVITIES, DEV_INTERACTIONS, DEV_DIALOGUE, DEV_SCENARIOS, DEV_REACTIONS, DEV_PHASES, type DevCommand, type DevSnapshot } from '../../shared/developer';
+import { DEV_ANIMATIONS, DEV_ACTIVITIES, DEV_INTERACTIONS, DEV_DIALOGUE, DEV_SCENARIOS, DEV_REACTIONS, DEV_PHASES, type DevCommand } from '../../shared/developer';
 import { SCENES, FLOURISHES } from '../../shared/theatrics';
 import { SECONDARY_POSES } from '../character/secondarySprites';
 import { PING_LINES, type PingKind } from '../../shared/contextPings';
@@ -295,18 +295,21 @@ async function renderChat() {
   if (connection.enabled && revision === navigationRevision && tab === 'chat') {
     micBtn.disabled = true;
     const authStatus = h('span', {}, connection.sharing ? 'ChatGPT connected · ' + (connection.account ?? '') + ' · ' + (connection.model ?? 'Choose a model before chatting') : 'Connect ChatGPT to talk with Capri');
-    const refresh = async () => { const state = await api.invoke('runtime2:session'); authStatus.textContent = state.sharing ? 'ChatGPT connected · ' + (state.account ?? '') : 'ChatGPT is disconnected'; };
+    const connectionSummary = h('summary', {}, connection.sharing ? 'ChatGPT connected' : 'Connect ChatGPT');
+    const refresh = async () => { const state = await api.invoke('runtime2:session'); authStatus.textContent = state.sharing ? 'ChatGPT connected · ' + (state.account ?? '') : 'ChatGPT is disconnected'; connectionSummary.textContent = state.sharing ? 'ChatGPT connected' : 'Connect ChatGPT'; };
     const act = async (action: 'signin' | 'add-account' | 'enable' | 'disconnect' | 'cancel') => { try { await api.invoke('runtime2:auth', action); await refresh(); } catch { authStatus.textContent = 'ChatGPT connection did not complete. Try again.'; } };
-    scroller.before(h('div', { class: 'row' }, authStatus,
+    const connectionBox = h('details', { class: 'companion-connection', open: !connection.sharing }, connectionSummary, h('div', { class: 'row' }, authStatus,
       btn('Available models', async () => { try { const models = await api.invoke('runtime2:models'); authStatus.textContent = models.map(m => m.id + (m.contextTokens ? ' (' + m.contextTokens + ' tokens)' : ' (capacity unavailable)')).join(' · ') || 'No models available'; } catch { authStatus.textContent = 'Sign in and enable ChatGPT plan usage to load available models.'; } }),
       btn('Sign in with ChatGPT', () => act('signin')), btn('Add ChatGPT account', () => act('add-account')), btn('Enable ChatGPT plan usage', () => act('enable')), btn('Cancel sign-in', () => act('cancel')), btn('Disconnect', () => act('disconnect')),
       h('a', { href: 'https://chatgpt.com/#settings/Usage', target: '_blank', rel: 'noreferrer' }, 'Manage usage')));
+    scroller.before(connectionBox);
     const daily = await api.invoke('runtime2:daily-status');
     if (daily) {
-      const quickStatus = h('span', {}, 'Recording off · Paused');
+      const quickStatus = h('strong', { role: 'status', 'aria-live': 'polite' }, 'Capri is paused');
+      const usage = h('span', { class: 'companion-usage' });
       const status = h('pre', { style: 'white-space:pre-wrap;font-size:12px' });
       const notice = h('div', { role: 'status' });
-      const model = h('select', { 'aria-label': 'Daily-test model' });
+      const model = h('select', { 'aria-label': 'Companion model' });
       const current = h('option', { value: daily.config.model }, daily.config.model || 'Load account models'); model.append(current);
       const inputs = new Map<string, HTMLInputElement>();
       const fields = [['maxRequests','Session request ceiling'], ['requestsPerHour','Requests per hour'], ['ambientMs','Routine ambient interval (minutes)'], ['maxTokens','Reported token ceiling'], ['diskBudgetMB','Diagnostic disk budget (MB)']] as const;
@@ -314,19 +317,30 @@ async function renderChat() {
       const inactivity = h('input', { type: 'checkbox', 'aria-label': 'Pace down when inactive' }); inactivity.checked = daily.config.inactivityPacing;
       const refreshDaily = async () => {
         const state = await api.invoke('runtime2:daily-status'); if (!state || revision !== navigationRevision) return;
-        quickStatus.textContent = (state.recording.active ? '● Recording' : 'Recording off') + (state.paused ? ' · Paused' : ' · Running');
+        const limited = state.usage.requests >= state.config.maxRequests;
+        quickStatus.textContent = limited ? 'Session request limit reached' : state.paused ? 'Capri is paused' : 'Capri is with you';
+        usage.textContent = state.usage.requests + ' of ' + state.config.maxRequests + ' requests used';
+        start.hidden = state.recording.active; start.disabled = !state.config.model;
+        pause.hidden = !state.recording.active || state.paused;
+        resume.hidden = !state.recording.active || !state.paused; resume.disabled = limited;
+        stop.hidden = !state.recording.active;
+        if (state.ledgerError || state.recording.error) notice.textContent = state.ledgerError || state.recording.error || '';
         status.textContent = (state.recording.active ? '● RECORDING' : 'Recording off') + (state.paused ? ' · Paused' : ' · Running') + '\n' + state.profile + '\nModel: ' + state.config.model + '\nCognition: ' + state.readiness.cognition + '\nAttention: ' + JSON.stringify(state.readiness.attention ?? 'normal') + '\nRequests: ' + state.usage.requests + '/' + state.config.maxRequests + ' · Last hour: ' + state.usage.requestsLastHour + '/' + state.config.requestsPerHour + '\nTokens: ' + state.usage.inputTokens + ' in / ' + state.usage.outputTokens + ' out' + (state.usage.tokenTotalsIncomplete ? ' (incomplete)' : '') + '\nArchive: ' + ((state.readiness.archive as any)?.state ?? 'unavailable') + ' · Chrome: ' + ((state.readiness.chrome as any)?.deliveringRecently ? 'receiving authorized pages' : (state.readiness.chrome as any)?.paired ? 'paired; waiting for authorized page delivery' : 'pair in Connections') + '\nObservation: ' + (state.readiness.observation ? 'active' : 'paused or permission needed') + ' · Screenshots: ' + (state.readiness.screenshotPermission ? 'permitted; check capture to verify' : 'permission needed') + '\nMovement: ' + (state.readiness.movement ? 'available' : 'currently blocked') + (state.ledgerError ? '\n' + state.ledgerError : '') + (state.recording.error ? '\n' + state.recording.error : '');
       };
       const run = async (action: 'start'|'stop'|'pause'|'resume'|'folder'|'report'|'export'|'capture'|'permissions'|'package') => { try { notice.textContent = await api.invoke('runtime2:daily-control', action); } catch (error) { notice.textContent = String(error); } await refreshDaily(); };
-      const box = h('details', { open: true, style: 'max-height:42vh;overflow:auto;padding:12px;flex-shrink:0;border:1px solid #42334e;border-radius:8px;margin:8px 0' }, h('summary', {}, 'Runtime 2 daily test'),
-        h('p', {}, 'Start recording explicitly. Records full model context, authorized page text, dialogue and captured images locally. Stop pauses observation and cloud inference. No microphone or call audio. Use Connections to pair Chrome and authorize each site.'),
+      const start = btn('Start Capri', () => run('start')); start.classList.add('primary');
+      const pause = btn('Pause', () => run('pause')), resume = btn('Resume', () => run('resume')), stop = btn('Stop session', () => run('stop'));
+      const session = h('section', { class: 'companion-session', 'aria-label': 'Companion session' },
+        h('div', { class: 'row' }, quickStatus, usage, start, pause, resume, stop),
+        h('p', { class: 'companion-privacy' }, 'Starting saves a local activity record with dialogue and any authorized page text or images. Stop pauses observation and model requests.'), notice);
+      const box = h('details', { open: !daily.config.model, class: 'companion-options' }, h('summary', {}, 'Usage and diagnostics'),
+        h('p', {}, 'Choose a model and usage limits while paused. Use Connections to pair Chrome and authorize each site. The activity record includes model context, but no microphone or call audio.'),
         h('div', { class: 'row' }, btn('Load account models', async () => { try { const models = await api.invoke('runtime2:models'); model.replaceChildren(...models.filter(m => !/codex|luna/i.test(m.id + m.label) && m.contextTokens).map(m => h('option', { value: m.id }, m.label + ' · ' + m.id))); if (models.some(m => m.id === daily.config.model)) model.value = daily.config.model; } catch (e) { notice.textContent = String(e); } }), model),
         h('div', { style: 'display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:12px 0' }, ...controls), h('label', {}, inactivity, ' Pace down when inactive'),
         btn('Save settings', async () => { try { const config = { ...daily.config, model: model.value, inactivityPacing: inactivity.checked }; for (const [key,input] of inputs) (config as any)[key] = Number(input.value) * (key === 'ambientMs' ? 60000 : 1); await api.invoke('runtime2:daily-config', config); notice.textContent = 'Saved. Start or resume when ready.'; } catch(e) { notice.textContent = String(e); } await refreshDaily(); }),
         h('div', { class: 'row' }, btn('Enable desktop context and movement', () => run('permissions'))),
-        h('div', { class: 'row' }, btn('Start diagnostic session', () => run('start')), btn('Stop session', () => run('stop')), btn('Pause', () => run('pause')), btn('Resume', () => run('resume'))),
-        h('div', { class: 'row' }, btn('Check capture', () => run('capture')), btn('Open report', () => run('report')), btn('Open diagnostic folder', () => run('folder')), btn('Create redacted export', () => run('export')), btn('Package private session', () => run('package'))), notice, status);
-      scroller.before(box, h('div', { class: 'row', style: 'padding:6px 0;flex-shrink:0' }, quickStatus, btn('Pause autonomy', () => run('pause')), btn('Stop recording', () => run('stop')))); await refreshDaily();
+        h('div', { class: 'row' }, btn('Check capture', () => run('capture')), btn('Open report', () => run('report')), btn('Open diagnostic folder', () => run('folder')), btn('Create redacted export', () => run('export')), btn('Package private session', () => run('package'))), status);
+      connectionBox.before(session); scroller.before(box); await refreshDaily();
       const timer = setInterval(() => { if (revision !== navigationRevision || !box.isConnected) { clearInterval(timer); return; } void refreshDaily().catch(() => {}); }, 3000);
     }
   }
@@ -862,7 +876,7 @@ async function renderSystem() {
 async function renderDeveloper() {
   const revision = navigationRevision;
   const header = viewHead('Developer tools'), sc = h('div', { class: 'scroll dev-scroll' }); view.append(header, sc);
-  sc.append(diagnosticExportControl());
+  sc.append(h('details', {class:'dev-exports'}, h('summary',{},'Export a diagnostic snapshot'), diagnosticExportControl()));
   const status = h('p', { role: 'status', id: 'dev-status', class: 'dev-status' }, 'Connecting…');
   const log = h('pre', { class: 'logs', id: 'dev-log' });
   const state = h('div', { id: 'dev-state' }), mind = h('div', { id: 'dev-mind' });
@@ -892,7 +906,28 @@ async function renderDeveloper() {
   const refresh = async () => {
     if (reading || paused || revision !== navigationRevision) return; reading = true;
     try {
-      const d: DevSnapshot = await api.invoke('dev:get'); if (revision !== navigationRevision) return;
+      const [d, companion] = await Promise.all([api.invoke('dev:get'), api.invoke('runtime2:daily-status')]); if (revision !== navigationRevision) return;
+      if (companion) {
+        runtimeNotice.hidden = false;
+        const c = companion, loop = c.readiness.loop as any;
+        const events = (c.readiness.recentEvents ?? []) as {at:number;type:string;summary:string}[];
+        const reasons = [c.paused && 'The companion session is paused. Start or resume it in Chat.', c.usage.requests >= c.config.maxRequests && 'The session request limit has been reached.', c.readiness.screenLocked && 'The desktop is locked or suspended.', loop?.paused && 'The cognitive loop is paused after a stop or failure.', loop?.environmentPaused && 'Current desktop conditions have paused cognition.', loop?.waitingForEvidence && 'Waiting for new evidence after a recoverable failure.', loop?.queuedSpeech && 'Waiting for queued or playing audio to finish.'].filter(Boolean) as string[];
+        status.textContent = 'RUNTIME 2 · ' + (c.paused ? 'Paused' : loop?.phase ?? 'Waiting') + ' · ' + (d.job.active ? 'Local preview running: ' + d.job.label : 'No local preview running');
+        fill(state, h('div', {class:'dev-grid'},
+          card('Companion runtime', line('Architecture', '2.0 · ' + c.readiness.cognition), line('Phase', loop?.phase ?? 'Unavailable'), line('Model', c.config.model || 'Choose a model in Chat'), line('Archive', (c.readiness.archive as any)?.state ?? 'Unavailable'), btn('Open companion session', () => api.invoke('panel:open','chat'))),
+          card('Why she is waiting', reasons.length ? h('ul', {}, ...reasons.map(r => h('li',{},r))) : note(loop?.wakeDecision?.replaceAll('-',' ') || 'Waiting for an eligible observation or direct message.'), line('Previous completion', loop?.previousCompletion ?? 'No model result in this process'), line('Pending sources', String(loop?.pendingSources?.length ?? 0))),
+          card('This session', line('Model requests', c.usage.requests + ' / ' + c.config.maxRequests), line('Input / output tokens', c.usage.inputTokens + ' / ' + c.usage.outputTokens), line('Activity record', c.recording.active ? 'Recording locally' : 'Off'), note('A model response, a displayed bubble and completed audio are separate outcomes.')),
+          card('Latest pipeline events', ...events.slice(-5).reverse().map(e => h('article',{class:'dev-entry'},h('h3',{},clock(e.at)+' · '+e.type),note(e.summary))), events.length ? null : empty('No recorded pipeline events yet. Start Capri in Chat to observe the actual loop.'))));
+        renderDetailViews = () => {
+          fill(mind, card('Runtime 2 canonical state', ...(loop?.canonical ?? []).map((s:any) => line(s.id, s.kind+' · '+s.status+' · revision '+s.revision)), loop?.canonical?.length ? null : empty('No active canonical state is loaded. This is the Runtime 2 archive, not the legacy mind.')));
+          fill(decisions, ...events.slice().reverse().filter(e => (e.type+' '+e.summary).toLowerCase().includes(decisionQuery.value.toLowerCase())).map(e => h('article',{class:'dev-entry'},h('h3',{},clock(e.at)+' · '+e.type),h('p',{},e.summary))), events.length ? null : empty('No recorded model or delivery outcomes in this process.'));
+        };
+        renderDetailViews();
+        log.textContent = d.job.log.map(e=>clock(e.at)+' '+e.text).join('\n') || 'Local preview results appear here; they do not establish autonomous behavior.';
+        for (const b of runButtons) b.disabled = d.job.active || !!panes.get('Live checks')?.contains(b);
+        stop.disabled = !d.job.active;
+        return;
+      }
       status.textContent = `${d.job.result.toUpperCase()}${d.job.label ? ' · ' + d.job.label : ''} · ${d.job.step || 'No preview running. Live state refreshes every second.'}`;
       const { runtime: r, mind: m, gates: g } = d, last = m.situation.journal.at(-1), renderer = r.poseRenderer;
       const fresh = m.environment.subjects.find(s => s.current)?.reading;
@@ -1002,6 +1037,8 @@ async function renderDeveloper() {
   const filter = () => { const query = search.value.toLowerCase().trim(); for (const section of Array.from(catalog.children) as HTMLElement[]) section.hidden = (category.value !== 'all' && section.dataset.category !== category.value) || !section.dataset.search?.includes(query); };
   search.addEventListener('input', filter); category.addEventListener('change', filter);
   panes.get('Live checks')!.prepend(note('These controls use real exposed-window context and can spend model usage. They honor privacy, focus and request limits. A denied or quiet result is shown in Overview and Results.'));
+  const runtimeNotice = h('p', {class:'dev-alert',hidden:true}, 'Runtime 2: the older contextual-check buttons below target the legacy runtime and are disabled. Start Capri in Chat, then inspect Overview and Results for actual companion outcomes.');
+  panes.get('Live checks')!.prepend(runtimeNotice);
   panes.get('Results')!.append(card('Preview log', log), card('Recent decisions', decisionQuery, note('A bounded journal of compact decisions from actual events. Local previews have a separate log.'), decisions));
   await refresh(); if (revision === navigationRevision) developerPoll = window.setInterval(() => void refresh(), 1000);
 }

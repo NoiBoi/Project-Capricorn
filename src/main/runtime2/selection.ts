@@ -2,8 +2,11 @@ import path from 'node:path';
 import fs from 'node:fs';
 
 /** An explicit installed-app entry point; cloud work still starts paused. */
-export function runtimeEnvironment(env: NodeJS.ProcessEnv, argv: string[]) {
-  return argv.includes('--runtime2') ? { ...env, CAPRI_RUNTIME: '2', CAPRI_V2_DAILY: '1', CAPRI_V2_PROFILE_ID: env.CAPRI_V2_PROFILE_ID ?? 'daily-test' } : env;
+export function runtimeEnvironment(env: NodeJS.ProcessEnv, argv: string[], packaged = false) {
+  if (argv.includes('--runtime2') && argv.includes('--legacy')) throw Error('Choose either the companion runtime or the legacy runtime.');
+  if (argv.includes('--legacy')) return { ...env, CAPRI_RUNTIME: 'legacy' };
+  const companion = argv.includes('--runtime2') || packaged && env.CAPRI_RUNTIME === undefined;
+  return companion ? { ...env, CAPRI_RUNTIME: '2', CAPRI_V2_DAILY: '1', CAPRI_V2_PROFILE_ID: env.CAPRI_V2_PROFILE_ID ?? 'daily-test' } : env;
 }
 
 /** Resolve before any store or Electron session opens. Never adopt a legacy profile. */

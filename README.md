@@ -6,7 +6,7 @@ This is an independent repository with a fresh Git history. It continues develop
 
 ## Current version
 
-1.6.0 adds an opt-in Runtime 2 companion entry point, bounded evidence reads without an investigation prerequisite, automatic historical dialogue recall, and playback-aware ambient pacing. The ordinary companion path is now the Runtime 2 default. See the [source review, implementation and verification](docs/OPEN_SOURCE_COMPANION_REVIEW.md). Natural companion quality still needs ordinary-use observation.
+2.0.0-beta.1 packages the existing Runtime 2 companion architecture with bounded evidence reads, automatic dialogue recall and playback-aware pacing. Chat now has a compact Start/Pause flow, and Developer tools shows Runtime 2's actual loop and pipeline outcomes. See the [development workflow and current evidence](docs/COMPANION_DEVELOPMENT.md) and [open-source architecture review](docs/OPEN_SOURCE_COMPANION_REVIEW.md). Sustained everyday companion quality remains an open behavioral question.
 
 - Ctrl+Shift+Space opens focused quick chat.
 - Ctrl+C+Space opens long-term chat on the active monitor. Escape dismisses it.
@@ -26,7 +26,7 @@ npm start
 
 `npm run dist` builds the Windows installer. Native-window and keyboard checks require an interactive Windows session. Close other Capri instances before native shortcut tests so they do not own the global hotkeys.
 
-For the new companion architecture, run `npm run start:daily`, or launch the installed executable with `--runtime2`. This opens the existing Chat panel with session controls, initially paused. It reuses the isolated Runtime 2 `daily-test` profile, leaving the normal profile separate. Model selection, sign-in and desktop-context controls are in the panel. The normal application launch continues to select the legacy runtime. Developers can select the earlier comparison paths with `CAPRI_V2_COGNITION=two-speed`, `lean`, or `layered`.
+`npm start` and the installed beta open Runtime 2, initially paused, using its existing isolated `daily-test` profile. Start Capri in Chat; model selection and limits are under Usage and diagnostics. The older profile is retained separately: use `npm run start:legacy` or launch with `--legacy` to access it. `--runtime2` remains an explicit companion launch flag. Developers can select the earlier comparison paths with `CAPRI_V2_COGNITION=two-speed`, `lean`, or `layered`.
 
 ## Privacy and attribution
 

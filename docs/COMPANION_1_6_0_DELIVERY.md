@@ -1,5 +1,8 @@
 # Capri 1.6.0 companion delivery
 
+Historical first delivery. The current 2.0 beta and subsequent live/UX evidence
+are described in [Companion development](COMPANION_DEVELOPMENT.md).
+
 Implemented November 12, 2026 on `feature/companion-evidence-loop`, based on
 `a062abe` (the November 5 interaction/context correction branch).
 

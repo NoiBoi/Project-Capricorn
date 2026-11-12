@@ -59,6 +59,8 @@ export class SessionRecorder {
   private metadata: Record<string, unknown> = {};
   private reportQueue: Promise<string | undefined> = Promise.resolve(undefined);
   private stopTask?: Promise<void>;
+  private recent: { at: number; type: string; summary: string }[] = [];
+  get recentEvents() { return structuredClone(this.recent); }
   constructor(profile: string) { this.root = path.join(profile, 'runtime2', 'diagnostics'); assertSyntheticProfile(this.root); }
   get status() { return { active: this.enabled, folder: this.folder, bytes: this.bytes, error: this.error, maxBytes: this.maxBytes }; }
   async start(metadata: Record<string, unknown>, maxBytes = this.maxBytes) {
@@ -68,6 +70,7 @@ export class SessionRecorder {
     await this.flush();
     await this.reportQueue.catch(() => undefined);
     this.maxBytes = maxBytes; this.error = undefined;
+    this.recent = [];
     this.images.clear();
     assertSyntheticProfile(this.root); await fs.promises.mkdir(this.root, { recursive: true });
     // Budget covers ALL retained sessions. Never silently delete a user's recording.
@@ -129,6 +132,15 @@ export class SessionRecorder {
   event(type: string, data: unknown, links: { cycleId?: string; requestId?: string } = {}) {
     if (!this.enabled) return;
     const event: DiagnosticEvent = { id: randomUUID(), at: Date.now(), monotonicMs: performance.now(), type, ...links, data: this.externalize(sanitizeDiagnostic(data)) };
+    const d = event.data;
+    const summary = type === 'provider.result' ? (d.text || (d.calls?.length ? d.calls.map((c: any) => c.name).join(', ') : 'Model chose silence'))
+      : type === 'tool.end' ? d.name + ': ' + d.execution?.receipt?.outcome + ' · ' + (d.execution?.receipt?.detail ?? '')
+      : type === 'provider.error' ? (d.detail || d.code || d.outcome)
+      : type === 'scheduler.decision' ? d.reason
+      : type === 'presentation.dispatch' ? (d.accepted ? 'Presentation accepted' : 'Presentation suppressed: ' + d.suppressedBy)
+      : /^speech\.(start|end|error|cancel)$/.test(type) ? type.replace('speech.', 'Audio ')
+      : type.startsWith('control.') ? type.slice(8) : undefined;
+    if (summary) { this.recent.push({ at: event.at, type, summary: String(summary).slice(0, 600) }); if (this.recent.length > 80) this.recent.shift(); }
     this.write('events.jsonl', Buffer.from(JSON.stringify(event) + '\n'), true);
   }
   request(id: string, stage: string, data: unknown, cycleId?: string) {

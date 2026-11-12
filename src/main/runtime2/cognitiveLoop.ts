@@ -183,6 +183,9 @@ export class CognitiveLoop {
   private phase(phase: AssistantPhase, detail?: string) { if (this.closed) return; this.phaseValue = phase; this.emit('chat:phase', { phase, detail, delivery: this.ambientInFlight ? 'aside' : 'reply' }); }
   get host() { return this.options.host; }
   get state() { return { phase: this.phaseValue, busy: !!this.running, inferences: structuredClone(this.inferenceReceipts) }; }
+  get diagnosticState() { return { phase: this.phaseValue, busy: !!this.running, paused: this.paused, environmentPaused: this.environmentPaused,
+    waitingForEvidence: this.awaitingRecoveryObservation, wakeDecision: this.lastWakeDecision, previousCompletion: this.previousCompletion,
+    queuedSpeech: this.playback.size, pendingSources: [...this.pendingSources], canonical: this.stateRevisions() }; }
   get id() { return this.conversationId; }
   async diagnosticBaseline(clean = false) {
     const page = await this.archive.conversation(1, true);
@@ -222,7 +225,7 @@ export class CognitiveLoop {
     return page.records.filter(r => r.kind === 'user' || r.kind === 'assistant').slice(-limit).map(r => ({ id: r.id, role: r.kind as 'user' | 'assistant', content: 'text' in r ? r.text : '', ts: r.at, meta: { provider: 'siwc', ...('viaVoice' in r && r.viaVoice ? {viaVoice:true} : {}) } }));
   }
   async send(text: string, options: {viaVoice?:boolean} = {}) {
-    if (this.options.daily?.paused) throw Error('Daily-test is paused. Start or resume the diagnostic session in Chat.');
+    if (this.options.daily?.paused) throw Error('Capri is paused. Start or resume the companion session in Chat.');
     this.emit('runtime2:stopSpeech', {});
     if (this.options.host && !this.options.host.allowed('conversation')) throw Error('Runtime 2 durable conversation is disabled by history privacy controls.');
     if (this.closed || !text.trim() || text.length > 20_000) throw Error('Invalid user message or stopped runtime.');

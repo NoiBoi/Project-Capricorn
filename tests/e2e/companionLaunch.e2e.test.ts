@@ -11,11 +11,12 @@ it('launches the installed companion entry point paused in an isolated profile a
   const dir = path.join(os.homedir(), 'Documents', 'Capri Buddy 2.0 Synthetic', id);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify({ firstRunComplete: true, ai: { provider: 'offline' }, privacy: { saveHistory: true }, dialogue: { localContext: true }, character: { startupIntro: false }, voice: { ttsEnabled: false }, behavior: { quietHours: { enabled: false } } }));
-  const env = { ...process.env, CAPRI_RUNTIME: 'legacy', CAPRI_USER_DATA: 'must-not-use-this-profile', CAPRI_V2_PROFILE_ID: id, CAPRI_TEST: '1', CAPRI_OFFSCREEN: '1', CAPRI_NO_DEV_KEY: '1', CAPRI_V2_WINDOW_FOCUS: '0' };
+  const env: NodeJS.ProcessEnv = { ...process.env, CAPRI_RUNTIME: 'legacy', CAPRI_USER_DATA: 'must-not-use-this-profile', CAPRI_V2_PROFILE_ID: id, CAPRI_TEST: '1', CAPRI_OFFSCREEN: '1', CAPRI_NO_DEV_KEY: '1', CAPRI_V2_WINDOW_FOCUS: '0' };
   let app: ElectronApplication | undefined;
   try {
     const executablePath = process.env.CAPRI_EXE;
-    app = await electron.launch({ ...(executablePath ? { executablePath } : {}), args: [...(executablePath ? [] : [path.resolve(__dirname, '../..')]), '--runtime2'], env });
+    if (executablePath) delete env.CAPRI_RUNTIME;
+    app = await electron.launch({ ...(executablePath ? { executablePath } : {}), args: executablePath ? [] : [path.resolve(__dirname, '../..'), '--runtime2'], env });
     await expect.poll(() => app!.evaluate(() => !!(globalThis as any).__capri?.runtime2)).toBe(true);
     const initial = await app.evaluate(({ app }) => {
       const r = (globalThis as any).__capri.runtime2;

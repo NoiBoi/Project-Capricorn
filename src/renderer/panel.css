@@ -133,6 +133,16 @@ input[type="range"]:focus-visible::-webkit-slider-thumb { background: var(--acce
 /* ---------------------------------------------------------------- chat */
 .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .chat .scroll { padding-top: 16px; }
+.companion-session{flex-shrink:0;padding:14px 20px;border-bottom:1px solid var(--line-strong)}
+.companion-session .row{align-items:center;gap:10px;flex-wrap:wrap}
+.companion-usage,.companion-privacy{color:var(--muted);font-size:12px}
+.companion-privacy{margin:8px 0 0;line-height:1.5}
+.companion-connection,.companion-options{flex-shrink:0;padding:8px 20px;border-bottom:1px solid var(--line-strong);font-size:13px}
+.companion-connection summary,.companion-options summary{cursor:pointer;color:var(--muted)}
+.companion-options[open]{max-height:36vh;overflow:auto}
+.companion-options .row,.companion-connection .row{flex-wrap:wrap;margin-top:10px}
+.dev-exports{margin:0 0 14px;color:var(--muted);font-size:13px}
+.dev-exports summary{cursor:pointer}
 .messages { display: flex; flex-direction: column; gap: 14px; }
 .msg { max-width: 86%; overflow-wrap: anywhere; white-space: pre-wrap; }
 .msg.user { align-self: flex-end; background: var(--raised); border: 1px solid var(--line); padding: 8px 12px; }

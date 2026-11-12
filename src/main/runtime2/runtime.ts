@@ -100,6 +100,7 @@ export class Runtime2 {
     return task;
   }
   get chatState() { return this.cognitive?.state ?? { phase: 'idle' as const, busy: false }; }
+  get diagnosticState() { return this.cognitive?.diagnosticState; }
   async send(text: string, options: {viaVoice?: boolean} = {}) { await this.whenSettled(); if (!this.cognitive || this.state !== 'active') throw Error('Runtime 2 conversation is unavailable.'); return this.cognitive.send(text,options); }
   async observeInteraction(event: import('./contracts').UserInteraction, target?: {handle:string;title:string}) {
     if (!this.collecting || !this.perception) return;

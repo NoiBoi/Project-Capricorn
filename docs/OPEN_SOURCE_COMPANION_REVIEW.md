@@ -1,5 +1,9 @@
 # Capri companion architecture: November 12, 2026
 
+This records the initial architecture review and 1.6 implementation slice. See
+[Companion development](COMPANION_DEVELOPMENT.md) for the current 2.0 beta launch
+defaults, developer UX and later real-model verification.
+
 ## Decision
 
 Keep Capri's Windows application, attributed experience archive, canonical state,

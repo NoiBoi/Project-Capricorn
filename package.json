@@ -1,12 +1,13 @@
 {
   "name": "capri-buddy",
-  "version": "1.6.0",
+  "version": "2.0.0-beta.1",
   "main": "dist/main/index.js",
   "scripts": {
     "start:daily": "node scripts/daily-test.mjs",
     "build": "node scripts/build.mjs",
     "build:prod": "node scripts/build.mjs --prod",
-    "start": "node scripts/build.mjs && electron .",
+    "start": "node scripts/build.mjs && electron . --runtime2",
+    "start:legacy": "node scripts/build.mjs && electron . --legacy",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run tests/unit",
     "test:e2e": "node scripts/build.mjs && vitest run tests/e2e --no-file-parallelism --testTimeout=60000 --hookTimeout=60000",

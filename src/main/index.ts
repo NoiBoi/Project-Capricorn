@@ -120,7 +120,7 @@ import { probeWindowsRecognizer, transcribeOpenAI, transcribeWindows, WakeWordLi
 
 const T0 = performance.timeOrigin;
 const TEST = process.env.CAPRI_TEST === '1';
-Object.assign(process.env, runtimeEnvironment(process.env, process.argv));
+Object.assign(process.env, runtimeEnvironment(process.env, process.argv, app.isPackaged));
 const runtimeSelection = selectRuntime(process.env, app.getPath('home'), app.isPackaged);
 const experimental = runtimeSelection.mode === '2';
 const profilePath = runtimeSelection.profile ?? profileDirectory(app.getPath('home'), process.env.CAPRI_USER_DATA);
@@ -3545,7 +3545,10 @@ function registerIpc() {
     return devSnapshot();
   });
   handle('dev:get', 'panel', none, devSnapshot);
-  handle('dev:run', 'panel', devCommandSchema, runDeveloper);
+  handle('dev:run', 'panel', devCommandSchema, command => {
+    if (runtime2 && command.kind === 'live') throw Error('These contextual checks use the legacy runtime. Start a companion session in Chat to inspect Runtime 2.');
+    return runDeveloper(command);
+  });
   handle('dev:stop', 'panel', none, () => developer.stop());
   handle('intro:done', 'intro', z.number().int().min(1), id => opening.finish(id));
   handle('taskbar:command', 'taskbar', z.enum(['open', 'chat', 'minimize', 'intro', 'settings', 'quit', 'normal', 'explore', 'sleep']), command => taskbar?.command(command));
@@ -3606,6 +3609,7 @@ function registerIpc() {
     screenshotTargets: runtime2?.perception?.host.windows().length ?? 0,
     movement: runtime2Allowed('move'),
     attention: runtime2?.attention?.snapshot(), cognition: process.env.CAPRI_V2_COGNITION ?? 'companion',
+    loop: runtime2?.diagnosticState, recentEvents: runtime2Daily.recorder.recentEvents,
     screenLocked: activityLocked || suspended,
     note: 'Permissions and targets are readiness checks. Use Check capture to verify actual pixels. Chrome last accepted delivery is separate from pairing. No microphone or call audio is recorded.',
   } } : null);

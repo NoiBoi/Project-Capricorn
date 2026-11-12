@@ -33,6 +33,9 @@ describe('runtime 2 foundation', () => {
     const launched = runtimeEnvironment({ CAPRI_USER_DATA: 'real-profile' }, ['--runtime2']);
     expect(launched).toMatchObject({ CAPRI_V2_DAILY: '1', CAPRI_V2_PROFILE_ID: 'daily-test' });
     expect(selectRuntime(launched, home, true).profile).toBe(path.join(home, 'Documents', 'Capri Buddy 2.0 Synthetic', 'daily-test'));
+    expect(runtimeEnvironment({}, [], true)).toMatchObject({ CAPRI_RUNTIME: '2', CAPRI_V2_DAILY: '1' });
+    expect(runtimeEnvironment({}, ['--legacy'], true)).toMatchObject({ CAPRI_RUNTIME: 'legacy' });
+    expect(() => runtimeEnvironment({}, ['--legacy', '--runtime2'], true)).toThrow('Choose either');
     expect(() => selectRuntime({ CAPRI_RUNTIME: 'typo' }, home)).toThrow();
     expect(() => selectRuntime({ CAPRI_RUNTIME: '2', CAPRI_V2_PROFILE_ID: '../Capri Buddy' }, home)).toThrow();
   });
